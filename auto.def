@@ -47,7 +47,8 @@ sqlite-configure canonical {
     "Use #line macros in the amalgamation:"
 
   define AMALGAMATION_EXTRA_SRC \
-    [join [opt-val amalgamation-extra-src ""] " "]
+    [join [concat [opt-val amalgamation-extra-src ""] \
+      [list [file join [get-define abs_top_srcdir] src featurestore.c]]] " "]
 
   define LINK_TOOLS_DYNAMICALLY [proj-opt-was-provided dynlink-tools]
 

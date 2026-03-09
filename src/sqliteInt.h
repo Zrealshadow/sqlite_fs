@@ -1433,7 +1433,7 @@ typedef int VList;
 #include "vdbe.h"
 #include "pcache.h"
 #include "mutex.h"
-
+#include "featurestore.h"
 /* The SQLITE_EXTRA_DURABLE compile-time option used to set the default
 ** synchronous setting to EXTRA.  It is no longer supported.
 */

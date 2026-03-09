@@ -543,6 +543,7 @@ LIBOBJS0 = alter.o analyze.o attach.o auth.o \
          fts3_tokenize_vtab.o \
          fts3_unicode.o fts3_unicode2.o fts3_write.o \
          fts5.o \
+         featurestore.o \
          func.o global.o hash.o \
          icu.o insert.o json.o legacy.o loadext.o \
          main.o malloc.o mem0.o mem1.o mem2.o mem3.o mem5.o \
@@ -557,7 +558,7 @@ LIBOBJS0 = alter.o analyze.o attach.o auth.o \
          vdbe.o vdbeapi.o vdbeaux.o vdbeblob.o vdbemem.o vdbesort.o \
          vdbetrace.o vdbevtab.o vtab.o \
          wal.o walker.o where.o wherecode.o whereexpr.o \
-         window.o
+         window.o 
 LIBOBJS = $(LIBOBJS0)
 
 #
@@ -598,6 +599,8 @@ SRC = \
   $(TOP)/src/expr.c \
   $(TOP)/src/fault.c \
   $(TOP)/src/fkey.c \
+  $(TOP)/src/featurestore.c \
+  $(TOP)/src/featurestore.h \
   $(TOP)/src/func.c \
   $(TOP)/src/global.c \
   $(TOP)/src/hash.c \
@@ -681,7 +684,8 @@ SRC = \
   $(TOP)/src/wherecode.c \
   $(TOP)/src/whereexpr.c \
   $(TOP)/src/whereInt.h \
-  $(TOP)/src/window.c
+  $(TOP)/src/window.c \
+
 
 # Source code for extensions
 #
@@ -1158,6 +1162,8 @@ parse.o:	parse.c $(DEPS_OBJ_COMMON)
 opcodes.o:	opcodes.c
 	$(T.cc.sqlite) -c opcodes.c
 
+
+
 # Rules to build individual *.o files from files in the src directory.
 #
 alter.o:	$(TOP)/src/alter.c $(DEPS_OBJ_COMMON)
@@ -1222,6 +1228,9 @@ fault.o:	$(TOP)/src/fault.c $(DEPS_OBJ_COMMON)
 
 fkey.o:	$(TOP)/src/fkey.c $(DEPS_OBJ_COMMON)
 	$(T.cc.sqlite) -c $(TOP)/src/fkey.c
+  
+featurestore.o: $(TOP)/src/featurestore.c $(DEPS_OBJ_COMMON) $(TOP)/src/featurestore.h
+	$(T.cc.sqlite) -c $(TOP)/src/featurestore.c
 
 func.o:	$(TOP)/src/func.c $(DEPS_OBJ_COMMON)
 	$(T.cc.sqlite) -c $(TOP)/src/func.c
@@ -1419,6 +1428,7 @@ tclsqlite-shell.o:	$(T.tcl.env.sh) tclsqlite-ex.c $(DEPS_OBJ_COMMON)
 tclsqlite-stubs.o:	$(T.tcl.env.sh) tclsqlite-ex.c $(DEPS_OBJ_COMMON)
 	$(T.compile.tcl) -DUSE_TCL_STUBS=1 -o $@ -c tclsqlite-ex.c $$TCL_INCLUDE_SPEC
 
+  
 #
 # STATIC_TCLSQLITE3 = 1 to statically link tclsqlite3, else
 # 0. Requires static versions of all requisite libraries. Primarily

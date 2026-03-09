@@ -227,6 +227,7 @@ static Keyword aKeywordTable[] = {
   { "EXISTS",           "TK_EXISTS",       ALWAYS,           4      },
   { "EXPLAIN",          "TK_EXPLAIN",      EXPLAIN,          1      },
   { "FAIL",             "TK_FAIL",         CONFLICT|TRIGGER, 1      },
+  { "FEATURE",          "TK_FEATURE",      ALWAYS,           1      },
   { "FILTER",           "TK_FILTER",       WINDOWFUNC,       4      },
   { "FIRST",            "TK_FIRST",        ALWAYS,           4      },
   { "FOLLOWING",        "TK_FOLLOWING",    WINDOWFUNC,       4      },

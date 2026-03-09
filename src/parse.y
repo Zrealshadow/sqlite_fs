@@ -261,6 +261,7 @@ columnname(A) ::= nm(A) typetoken(Y). {sqlite3AddColumn(pParse,A,Y);}
 // Various assert() statements throughout the code enforce these restrictions.
 //
 %token ABORT ACTION AFTER ANALYZE ASC ATTACH BEFORE BEGIN BY CASCADE CAST.
+%token FEATURE REFRESH DESCRIBE.
 %token CONFLICT DATABASE DEFERRED DESC DETACH EACH END EXCLUSIVE EXPLAIN FAIL.
 %token OR AND NOT IS ISNOT MATCH LIKE_KW BETWEEN IN ISNULL NOTNULL NE EQ.
 %token GT LE LT GE ESCAPE.
@@ -514,6 +515,29 @@ cmd ::= DROP VIEW ifexists(E) fullname(X). {
   sqlite3DropTable(pParse, X, 1, E);
 }
 %endif  SQLITE_OMIT_VIEW
+
+///////////////////// The CREATE FEATURE statement /////////////////////////////
+%ifndef SQLITE_OMIT_FEATURE
+cmd ::= createkw FEATURE nm(N) AS LP(L) select(S) RP(R)
+  PARTITION BY nm(P) BY nm(G). {
+  sqlite3CreateFeature(pParse, &N, S, &L, &R, &P, &G);
+}
+%endif SQLITE_OMIT_FEATURE
+
+///////////////////// The REFRESH FEATURE statement /////////////////////////////
+cmd ::= REFRESH FEATURE nm(N). {
+  sqlite3RefreshFeature(pParse, &N);
+}
+
+///////////////////// The DESCRIBE FEATURE statement /////////////////////////////
+cmd ::= DESCRIBE FEATURE nm(N). {
+  sqlite3DescribeFeature(pParse, &N);
+}
+
+///////////////////// The DROP FEATURE statement ////////////////////////////////
+cmd ::= DROP FEATURE nm(N). {
+  sqlite3DropFeature(pParse, &N);
+}
 
 //////////////////////// The SELECT statement /////////////////////////////////
 //
