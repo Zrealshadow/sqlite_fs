@@ -17,7 +17,8 @@
 ** All SQL in this file must reference these macros — never
 ** hardcode the strings directly, so a rename only touches here.
 ** ============================================================ */
-#define SQLITEFS_META_TABLE    "sqlite_fs_features"
+// #define SQLITEFS_META_TABLE    "sqlite_fs_features"
+#define SQLITEFS_META_TABLE    "_sqlitefs_features"
 #define SQLITEFS_COL_NAME      "feature_name"
 #define SQLITEFS_COL_QUERY     "query_definition"
 #define SQLITEFS_COL_PARTCOL   "partition_column"
@@ -267,6 +268,71 @@ static int sqlitefsEnsureMetaTable(Parse *pParse, int iDb, u32 *pTnum){
 ** Uses NestedParse INSERT when the table was already in the schema,
 ** or raw VDBE opcodes when it was just created (not yet in schema).
 */
+/*
+Not used, cannot concurrently change the index.
+*/
+// static void sqlitefsRegisterFeature(
+//     Parse      *pParse,
+//     const char *zName,
+//     const char *zQuery,
+//     const char *zPartCol,
+//     const char *zGranularity
+// ){
+//     Vdbe *v   = sqlite3GetVdbe(pParse);
+//     int   iDb = 0;
+//     int   iCur = pParse->nTab++;
+//     u32   tnum;
+//     int   createTbl;
+
+//     if( v==0 ) return;
+
+//     createTbl = sqlitefsEnsureMetaTable(pParse, iDb, &tnum);
+//     if( createTbl<0 ) {
+//         sqlite3ErrorMsg(pParse, "unable to create metadata table");
+//         return;
+//     }
+
+//     sqlite3VdbeAddOp4Int(v, OP_OpenWrite, iCur, (int)tnum, iDb, SQLITEFS_META_TABLE_NCOL);
+//     sqlite3VdbeChangeP5(v, (u8)createTbl);
+
+//     if( createTbl==0 ){
+//         /* Table was already in the schema — NestedParse INSERT is safe. */
+//         sqlite3VdbeAddOp1(v, OP_Close, iCur);
+//         sqlite3NestedParse(pParse, sqlitefs_insert_feature,
+//                            zName, zQuery, zPartCol, zGranularity);
+//     }else{
+//         /* Table was just created — NestedParse INSERT would fail because
+//         ** the table is not yet in the in-memory schema.  Use raw opcodes. */
+//         int regBase   = sqlite3GetTempRange(pParse, 4);
+//         int regRecord = sqlite3GetTempReg(pParse);
+//         int regRowid  = sqlite3GetTempReg(pParse);
+
+//         sqlite3VdbeAddOp4(v, OP_String8, 0, regBase+0, 0, zName,        0);
+//         sqlite3VdbeAddOp4(v, OP_String8, 0, regBase+1, 0, zQuery,       0);
+//         sqlite3VdbeAddOp4(v, OP_String8, 0, regBase+2, 0, zPartCol,     0);
+//         sqlite3VdbeAddOp4(v, OP_String8, 0, regBase+3, 0, zGranularity, 0);
+
+//         sqlite3VdbeAddOp3(v, OP_MakeRecord, regBase, 4, regRecord);
+//         sqlite3VdbeAddOp3(v, OP_NewRowid,   iCur, regRowid, 0);
+//         sqlite3VdbeAddOp3(v, OP_Insert,     iCur, regRecord, regRowid);
+
+//         sqlite3ReleaseTempReg(pParse, regRowid);
+//         sqlite3ReleaseTempReg(pParse, regRecord);
+//         sqlite3ReleaseTempRange(pParse, regBase, 4);
+//         sqlite3VdbeAddOp1(v, OP_Close, iCur);
+//     }
+// }
+
+/*
+** Register a feature using sqlite3_exec — runs immediately at parse time.
+** Unlike sqlitefsRegisterFeature (VDBE path), this calls sqlite3_exec
+** directly so SQLite's full INSERT machinery runs, which updates both
+** the main table B-tree AND the feature_name PRIMARY KEY index correctly.
+**
+** Trade-off: executes at sqlite3_prepare time (not sqlite3_step time),
+** so it is not part of the caller's VDBE transaction.  For a metadata
+** table this is acceptable.
+*/
 static void sqlitefsRegisterFeature(
     Parse      *pParse,
     const char *zName,
@@ -274,48 +340,33 @@ static void sqlitefsRegisterFeature(
     const char *zPartCol,
     const char *zGranularity
 ){
-    Vdbe *v   = sqlite3GetVdbe(pParse);
-    int   iDb = 0;
-    int   iCur = pParse->nTab++;
-    u32   tnum;
-    int   createTbl;
+    sqlite3 *db = pParse->db;
+    char    *zErrMsg = 0;
+    char    *zSql    = 0;
+    int      rc;
 
-    if( v==0 ) return;
-
-    createTbl = sqlitefsEnsureMetaTable(pParse, iDb, &tnum);
-    if( createTbl<0 ) {
-        sqlite3ErrorMsg(pParse, "unable to create metadata table");
+    /* Step 1: ensure the metadata table exists. */
+    rc = sqlite3_exec(db, sqlitefs_meta_ddl, 0, 0, &zErrMsg);
+    if( rc!=SQLITE_OK ){
+        sqlite3ErrorMsg(pParse, "Ensure Feature Metadata: %s", zErrMsg);
+        sqlite3_free(zErrMsg);
         return;
     }
 
-    sqlite3VdbeAddOp4Int(v, OP_OpenWrite, iCur, (int)tnum, iDb, SQLITEFS_META_TABLE_NCOL);
-    sqlite3VdbeChangeP5(v, (u8)createTbl);
-
-    if( createTbl==0 ){
-        /* Table was already in the schema — NestedParse INSERT is safe. */
-        sqlite3VdbeAddOp1(v, OP_Close, iCur);
-        sqlite3NestedParse(pParse, sqlitefs_insert_feature,
+    /* Step 2: insert (or replace) the feature row.
+    ** sqlite3_exec runs a full INSERT which updates all B-trees, including
+    ** the implicit index on feature_name TEXT PRIMARY KEY. */
+    zSql = sqlite3_mprintf(sqlitefs_insert_feature,
                            zName, zQuery, zPartCol, zGranularity);
-    }else{
-        /* Table was just created — NestedParse INSERT would fail because
-        ** the table is not yet in the in-memory schema.  Use raw opcodes. */
-        int regBase   = sqlite3GetTempRange(pParse, 4);
-        int regRecord = sqlite3GetTempReg(pParse);
-        int regRowid  = sqlite3GetTempReg(pParse);
-
-        sqlite3VdbeAddOp4(v, OP_String8, 0, regBase+0, 0, zName,        0);
-        sqlite3VdbeAddOp4(v, OP_String8, 0, regBase+1, 0, zQuery,       0);
-        sqlite3VdbeAddOp4(v, OP_String8, 0, regBase+2, 0, zPartCol,     0);
-        sqlite3VdbeAddOp4(v, OP_String8, 0, regBase+3, 0, zGranularity, 0);
-
-        sqlite3VdbeAddOp3(v, OP_MakeRecord, regBase, 4, regRecord);
-        sqlite3VdbeAddOp3(v, OP_NewRowid,   iCur, regRowid, 0);
-        sqlite3VdbeAddOp3(v, OP_Insert,     iCur, regRecord, regRowid);
-
-        sqlite3ReleaseTempReg(pParse, regRowid);
-        sqlite3ReleaseTempReg(pParse, regRecord);
-        sqlite3ReleaseTempRange(pParse, regBase, 4);
-        sqlite3VdbeAddOp1(v, OP_Close, iCur);
+    if( zSql==0 ){
+        sqlite3OomFault(db);
+        return;
+    }
+    rc = sqlite3_exec(db, zSql, 0, 0, &zErrMsg);
+    sqlite3_free(zSql);
+    if( rc!=SQLITE_OK ){
+        sqlite3ErrorMsg(pParse, "INSERT FEATURE: %s", zErrMsg);
+        sqlite3_free(zErrMsg);
     }
 }
 

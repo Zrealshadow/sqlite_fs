@@ -3777,6 +3777,7 @@ static const char *(azHelp[]) = {
   ".expert                  EXPERIMENTAL. Suggest indexes for queries",
 #endif
   ".explain ?on|off|auto?   Change the EXPLAIN formatting mode.  Default: auto",
+  ".feature                 List all registered feature store definitions",
   ".filectrl CMD ...        Run various sqlite3_file_control() operations",
   "   --schema SCHEMA         Use SCHEMA instead of \"main\"",
   "   --help                  Show CMD details",
@@ -9518,6 +9519,16 @@ static int do_meta_command(const char *zLine, ShellState *p){
     }
   }else
 #endif
+
+  if( c=='f' && cli_strncmp(azArg[0], "feature", n)==0 ){
+    open_db(p, 0);
+    rc = shell_exec(p,
+      "SELECT feature_name, partition_column, granularity,"
+      "       created_at, query_definition"
+      "  FROM _sqlitefs_features ORDER BY feature_name",
+      0);
+    if( rc ) rc = SQLITE_OK; /* table may not exist yet */
+  }else
 
   if( c=='f' && cli_strncmp(azArg[0], "filectrl", n)==0 ){
     static const struct {
