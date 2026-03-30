@@ -1,0 +1,30 @@
+
+
+set testdir [file dirname $argv0]
+source $testdir/tester.tcl
+
+#-------------------------------
+# Test Organization
+
+
+# 1.1 Create features
+do_execsql_test featurestore1-1.1 {
+    CREATE FEATURE daily_clicks
+    AS (SELECT user_id, COUNT(*) AS clicks FROM events)
+    PARTITION BY created_at BY DAY;
+    } {}
+
+
+# 1.2 Query the metadata table -- verify the row was inserted
+do_execsql_test featurestore1-1.2 {
+    SELECT feature_name, partition_column, granularity
+    FROM _sqlite_fs_features;
+    } {daily_clicks created_at DAY}
+
+
+# 1.3 Error case
+do_catchsql_test featurestore1-1.3 {
+    CREATE FEATURE daily_clicks
+    AS (SELECT user_id from events)
+    PARTITION BY created_at BY DAY;
+    } {0 {}}

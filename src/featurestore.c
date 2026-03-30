@@ -18,7 +18,7 @@
 ** hardcode the strings directly, so a rename only touches here.
 ** ============================================================ */
 // #define SQLITEFS_META_TABLE    "sqlite_fs_features"
-#define SQLITEFS_META_TABLE    "_sqlitefs_features"
+#define SQLITEFS_META_TABLE    "_sqlite_fs_features"
 #define SQLITEFS_COL_NAME      "feature_name"
 #define SQLITEFS_COL_QUERY     "query_definition"
 #define SQLITEFS_COL_PARTCOL   "partition_column"
