@@ -1,30 +1,144 @@
-
-
 set testdir [file dirname $argv0]
 source $testdir/tester.tcl
 
-#-------------------------------
-# Test Organization
+# Setup: base table used by all tests
+do_execsql_test featurestore1-0.1 {
+    CREATE TABLE events (
+        user_id    INTEGER,
+        event_date TEXT,
+        action     TEXT
+    );
+} {}
 
+# ============================================================
+# 1.x  Success cases
+# ============================================================
 
-# 1.1 Create features
+# 1.1  partition_column is a plain column in the SELECT output
 do_execsql_test featurestore1-1.1 {
-    CREATE FEATURE daily_clicks
-    AS (SELECT user_id, COUNT(*) AS clicks FROM events)
-    PARTITION BY created_at BY DAY;
-    } {}
+    CREATE FEATURE daily_clicks AS (
+        SELECT user_id, event_date, COUNT(*) AS cnt
+        FROM events
+        GROUP BY user_id, event_date
+    ) PARTITION BY event_date BY DAY;
+} {}
 
-
-# 1.2 Query the metadata table -- verify the row was inserted
+# 1.2  Metadata row was inserted correctly
 do_execsql_test featurestore1-1.2 {
     SELECT feature_name, partition_column, granularity
-    FROM _sqlite_fs_features;
-    } {daily_clicks created_at DAY}
+    FROM _sqlite_fs_features
+    WHERE feature_name = 'daily_clicks';
+} {daily_clicks event_date DAY}
 
+# 1.3  partition_column matches an alias (AS event_date)
+do_execsql_test featurestore1-1.3 {
+    CREATE FEATURE aliased_date AS (
+        SELECT user_id, date(event_date) AS event_date
+        FROM events
+    ) PARTITION BY event_date BY MONTH;
+} {}
 
-# 1.3 Error case
-do_catchsql_test featurestore1-1.3 {
-    CREATE FEATURE daily_clicks
-    AS (SELECT user_id from events)
-    PARTITION BY created_at BY DAY;
-    } {0 {}}
+# 1.4  Different granularities are accepted
+do_execsql_test featurestore1-1.4 {
+    CREATE FEATURE hourly_actions AS (
+        SELECT action, event_date, COUNT(*) AS cnt
+        FROM events
+        GROUP BY action, event_date
+    ) PARTITION BY event_date BY HOUR;
+} {}
+
+# ============================================================
+# 2.x  Failure cases — partition_column not in SELECT
+# ============================================================
+
+# 2.1  partition_column 'ts' does not appear in SELECT output
+do_catchsql_test featurestore1-2.1 {
+    CREATE FEATURE bad_partition AS (
+        SELECT user_id, event_date, COUNT(*) AS cnt
+        FROM events
+        GROUP BY user_id, event_date
+    ) PARTITION BY ts BY DAY;
+} {1 {partition_column 'ts' not found in query_definition}}
+
+# 2.2  partition_column name is present in WHERE but not in SELECT output
+do_catchsql_test featurestore1-2.2 {
+    CREATE FEATURE bad_where_col AS (
+        SELECT user_id, COUNT(*) AS cnt
+        FROM events
+        WHERE event_date > '2026-01-01'
+        GROUP BY user_id
+    ) PARTITION BY event_date BY DAY;
+} {1 {partition_column 'event_date' not found in query_definition}}
+
+# ============================================================
+# 3.x  Failure cases — invalid query_definition
+# ============================================================
+
+# 3.0  Query definition is not enclosed in parentheses — syntax error
+do_catchsql_test featurestore1-3.0 {
+    CREATE FEATURE no_parens AS
+        SELECT user_id, event_date FROM events
+    PARTITION BY event_date BY DAY;
+} {1 {near "SELECT": syntax error}}
+
+# 3.1  Query references a table that does not exist
+do_catchsql_test featurestore1-3.1 {
+    CREATE FEATURE bad_table AS (
+        SELECT user_id, event_date FROM no_such_table
+    ) PARTITION BY event_date BY DAY;
+} {1 {invalid query_definition: no such table: no_such_table}}
+
+# 3.1a  SELECT from a non-existent table — syntactically valid, caught by
+#        our sqlite3_prepare_v2 validation.
+do_catchsql_test featurestore1-3.1a {
+    CREATE FEATURE bad_table_simple AS (
+        SELECT user_id, event_date FROM no_such_table
+    ) PARTITION BY event_date BY DAY;
+} {1 {invalid query_definition: no such table: no_such_table}}
+
+# 3.1b  JOIN references a non-existent table — syntactically valid, caught by
+#        our sqlite3_prepare_v2 validation (not the Lemon parser).
+do_catchsql_test featurestore1-3.1b {
+    CREATE FEATURE bad_join AS (
+        SELECT e.user_id, e.event_date, u.username
+        FROM events AS e
+        JOIN no_such_users AS u ON e.user_id = u.id
+    ) PARTITION BY event_date BY DAY;
+} {1 {invalid query_definition: no such table: no_such_users}}
+
+# 3.1c  SELECT references a column that does not exist on the table —
+#        syntactically valid, caught by our sqlite3_prepare_v2 validation.
+do_catchsql_test featurestore1-3.1c {
+    CREATE FEATURE bad_column AS (
+        SELECT user_id, event_date, no_such_col
+        FROM events
+    ) PARTITION BY event_date BY DAY;
+} {1 {invalid query_definition: no such column: no_such_col}}
+
+# 3.2  Query has a syntax error, broken SELEC query leads to error raised by Parser
+do_catchsql_test featurestore1-3.2 {
+    CREATE FEATURE bad_syntax AS (
+        SELECT FROM events
+    ) PARTITION BY event_date BY DAY;
+} {1 {near "FROM": syntax error}}
+
+# ============================================================
+# 4.x  Failure cases — invalid granularity
+# ============================================================
+
+# 4.1  Unknown granularity keyword
+do_catchsql_test featurestore1-4.1 {
+    CREATE FEATURE bad_gran AS (
+        SELECT user_id, event_date FROM events
+    ) PARTITION BY event_date BY MINUTE;
+} {1 {unknown granularity: MINUTE}}
+
+# ============================================================
+# 5.x  Verify only valid features were registered
+# ============================================================
+
+do_execsql_test featurestore1-5.1 {
+    SELECT feature_name FROM _sqlite_fs_features ORDER BY feature_name;
+} {aliased_date daily_clicks hourly_actions}
+
+finish_test

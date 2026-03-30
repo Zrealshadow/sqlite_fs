@@ -18,33 +18,30 @@
 ** hardcode the strings directly, so a rename only touches here.
 ** ============================================================ */
 // #define SQLITEFS_META_TABLE    "sqlite_fs_features"
-#define SQLITEFS_META_TABLE    "_sqlite_fs_features"
-#define SQLITEFS_COL_NAME      "feature_name"
-#define SQLITEFS_COL_QUERY     "query_definition"
-#define SQLITEFS_COL_PARTCOL   "partition_column"
-#define SQLITEFS_COL_GRAN      "granularity"
-#define SQLITEFS_COL_CREATED   "created_at"
+#define SQLITEFS_META_TABLE "_sqlite_fs_features"
+#define SQLITEFS_COL_NAME "feature_name"
+#define SQLITEFS_COL_QUERY "query_definition"
+#define SQLITEFS_COL_PARTCOL "partition_column"
+#define SQLITEFS_COL_GRAN "granularity"
+#define SQLITEFS_COL_CREATED "created_at"
 #define SQLITEFS_COL_REFRESHED "last_refreshed"
 #define SQLITEFS_META_TABLE_NCOL 4
 
 /* DDL — assembled from the macros above via C string concatenation */
 static const char sqlitefs_meta_ddl[] =
     "CREATE TABLE IF NOT EXISTS " SQLITEFS_META_TABLE "("
-    "  " SQLITEFS_COL_NAME      " TEXT PRIMARY KEY,"
-    "  " SQLITEFS_COL_QUERY     " TEXT NOT NULL,"
-    "  " SQLITEFS_COL_PARTCOL   " TEXT,"
-    "  " SQLITEFS_COL_GRAN      " TEXT,"
-    "  " SQLITEFS_COL_CREATED   " TEXT DEFAULT (datetime('now')),"
+    "  " SQLITEFS_COL_NAME " TEXT PRIMARY KEY,"
+    "  " SQLITEFS_COL_QUERY " TEXT NOT NULL,"
+    "  " SQLITEFS_COL_PARTCOL " TEXT,"
+    "  " SQLITEFS_COL_GRAN " TEXT,"
+    "  " SQLITEFS_COL_CREATED " TEXT DEFAULT (datetime('now')),"
     "  " SQLITEFS_COL_REFRESHED " TEXT"
     ")";
 
-    
 static const char sqlitefs_insert_feature[] =
     "INSERT OR REPLACE INTO " SQLITEFS_META_TABLE
     " (" SQLITEFS_COL_NAME ", " SQLITEFS_COL_QUERY ", " SQLITEFS_COL_PARTCOL ", " SQLITEFS_COL_GRAN ")"
     " VALUES (%Q, %Q, %Q, %Q)";
-
-
 
 /* ============================================================
 ** SQL Function: create_feature(name, query)
@@ -110,8 +107,6 @@ static void sqlitefsCreateFeatureFunc(
     sqlite3_result_text(context, "Feature created", -1, SQLITE_STATIC);
 }
 
-
-
 /* ============================================================
 ** SQL Function: drop_feature(name)
 **
@@ -141,7 +136,8 @@ static void sqlitefsDropFeatureFunc(
 
     zSql = sqlite3_mprintf(
         "DELETE FROM " SQLITEFS_META_TABLE
-        " WHERE " SQLITEFS_COL_NAME "=%Q", zName);
+        " WHERE " SQLITEFS_COL_NAME "=%Q",
+        zName);
     rc = sqlite3_exec(db, zSql, 0, 0, &zErrMsg);
     sqlite3_free(zSql);
 
@@ -230,9 +226,7 @@ int sqlite3FeatureStoreInit(sqlite3 *db)
 
 #ifndef SQLITE_OMIT_FEATURE
 
-
-
-/* 
+/*
 ================================ Add new Keyword ==============================
 */
 
@@ -243,11 +237,13 @@ int sqlite3FeatureStoreInit(sqlite3 *db)
 ** OPFLAG_P2ISREG (pParse->u1.cr.regRoot now holds the root-page register).
 ** Returns -1 on error.
 */
-static int sqlitefsEnsureMetaTable(Parse *pParse, int iDb, u32 *pTnum){
-    sqlite3 *db    = pParse->db;
-    Table   *pMeta = sqlite3FindTable(db, SQLITEFS_META_TABLE,
-                                      db->aDb[iDb].zDbSName);
-    if( pMeta!=0 ){
+static int sqlitefsEnsureMetaTable(Parse *pParse, int iDb, u32 *pTnum)
+{
+    sqlite3 *db = pParse->db;
+    Table *pMeta = sqlite3FindTable(db, SQLITEFS_META_TABLE,
+                                    db->aDb[iDb].zDbSName);
+    if (pMeta != 0)
+    {
         /* Table already exists — bypass creation. */
         sqlite3TableLock(pParse, iDb, pMeta->tnum, 1, SQLITEFS_META_TABLE);
         *pTnum = pMeta->tnum;
@@ -257,7 +253,8 @@ static int sqlitefsEnsureMetaTable(Parse *pParse, int iDb, u32 *pTnum){
     ** Side-effect: pParse->u1.cr.regRoot is set to the register that
     ** will hold the new root page at VDBE runtime. */
     sqlite3NestedParse(pParse, "%s", sqlitefs_meta_ddl);
-    if( pParse->nErr ) return -1;
+    if (pParse->nErr)
+        return -1;
     *pTnum = (u32)pParse->u1.cr.regRoot;
     return OPFLAG_P2ISREG;
 }
@@ -334,20 +331,21 @@ Not used, cannot concurrently change the index.
 ** table this is acceptable.
 */
 static void sqlitefsRegisterFeature(
-    Parse      *pParse,
+    Parse *pParse,
     const char *zName,
     const char *zQuery,
     const char *zPartCol,
-    const char *zGranularity
-){
+    const char *zGranularity)
+{
     sqlite3 *db = pParse->db;
-    char    *zErrMsg = 0;
-    char    *zSql    = 0;
-    int      rc;
+    char *zErrMsg = 0;
+    char *zSql = 0;
+    int rc;
 
     /* Step 1: ensure the metadata table exists. */
     rc = sqlite3_exec(db, sqlitefs_meta_ddl, 0, 0, &zErrMsg);
-    if( rc!=SQLITE_OK ){
+    if (rc != SQLITE_OK)
+    {
         sqlite3ErrorMsg(pParse, "Ensure Feature Metadata: %s", zErrMsg);
         sqlite3_free(zErrMsg);
         return;
@@ -358,13 +356,15 @@ static void sqlitefsRegisterFeature(
     ** the implicit index on feature_name TEXT PRIMARY KEY. */
     zSql = sqlite3_mprintf(sqlitefs_insert_feature,
                            zName, zQuery, zPartCol, zGranularity);
-    if( zSql==0 ){
+    if (zSql == 0)
+    {
         sqlite3OomFault(db);
         return;
     }
     rc = sqlite3_exec(db, zSql, 0, 0, &zErrMsg);
     sqlite3_free(zSql);
-    if( rc!=SQLITE_OK ){
+    if (rc != SQLITE_OK)
+    {
         sqlite3ErrorMsg(pParse, "INSERT FEATURE: %s", zErrMsg);
         sqlite3_free(zErrMsg);
     }
@@ -379,13 +379,13 @@ static void sqlitefsRegisterFeature(
 ** table and creates a placeholder view for the feature.
 */
 void sqlite3CreateFeature(
-    Parse *pParse,      /* The parsing context */
-    Token *pName,       /* The feature name token */
-    Select *pSelect,    /* The SELECT defining the feature */
-    Token *pLp,         /* The '(' token — select text starts just after */
-    Token *pRp,         /* The ')' token — select text ends just before */
-    Token *pPartCol,    /* The partition column name */
-    Token *pGran        /* The granularity keyword token (HOUR/DAY/WEEK/MONTH/YEAR) */
+    Parse *pParse,   /* The parsing context */
+    Token *pName,    /* The feature name token */
+    Select *pSelect, /* The SELECT defining the feature */
+    Token *pLp,      /* The '(' token — select text starts just after */
+    Token *pRp,      /* The ')' token — select text ends just before */
+    Token *pPartCol, /* The partition column name */
+    Token *pGran     /* The granularity keyword token (HOUR/DAY/WEEK/MONTH/YEAR) */
 )
 {
     sqlite3 *db = pParse->db;
@@ -409,14 +409,18 @@ void sqlite3CreateFeature(
     }
 
     /* Validate and extract the granularity keyword from its token. */
-    if( sqlite3_strnicmp(pGran->z, "HOUR",  4)==0 ||
-        sqlite3_strnicmp(pGran->z, "DAY",   3)==0 ||
-        sqlite3_strnicmp(pGran->z, "WEEK",  4)==0 ||
-        sqlite3_strnicmp(pGran->z, "MONTH", 5)==0 ||
-        sqlite3_strnicmp(pGran->z, "YEAR",  4)==0 ){
+    if (sqlite3_strnicmp(pGran->z, "HOUR", 4) == 0 ||
+        sqlite3_strnicmp(pGran->z, "DAY", 3) == 0 ||
+        sqlite3_strnicmp(pGran->z, "WEEK", 4) == 0 ||
+        sqlite3_strnicmp(pGran->z, "MONTH", 5) == 0 ||
+        sqlite3_strnicmp(pGran->z, "YEAR", 4) == 0)
+    {
         zGranularity = sqlite3DbStrNDup(db, pGran->z, pGran->n);
-        if( zGranularity==0 ) goto feature_cleanup;
-    }else{
+        if (zGranularity == 0)
+            goto feature_cleanup;
+    }
+    else
+    {
         sqlite3ErrorMsg(pParse, "unknown granularity: %.*s", pGran->n, pGran->z);
         goto feature_cleanup;
     }
@@ -426,10 +430,63 @@ void sqlite3CreateFeature(
     {
         const char *zSelBegin = pLp->z + pLp->n;
         int nSel = (int)(pRp->z - zSelBegin);
-        while( nSel>0 && sqlite3Isspace(zSelBegin[0]) ){ zSelBegin++; nSel--; }
-        while( nSel>0 && sqlite3Isspace(zSelBegin[nSel-1]) ){ nSel--; }
+        while (nSel > 0 && sqlite3Isspace(zSelBegin[0]))
+        {
+            zSelBegin++;
+            nSel--;
+        }
+        while (nSel > 0 && sqlite3Isspace(zSelBegin[nSel - 1]))
+        {
+            nSel--;
+        }
         zQuery = sqlite3DbStrNDup(db, zSelBegin, nSel);
-        if( zQuery==0 ) goto feature_cleanup;
+        if (zQuery == 0){
+            sqlite3ErrorMsg(pParse, "Fail to extract query_definition");
+            goto feature_cleanup;
+        }
+    }
+
+    /* Validate query_definition and partition_column.
+    ** Step 1: prepare the query — catches syntax errors and missing tables.
+    ** Step 2: scan column names — partition_column must be in the result set.
+    */
+    {
+        sqlite3_stmt *pStmt = 0;
+        int rc;
+        int i, nCol;
+        int found = 0;
+        
+
+        // check the defined query syntax valid
+        rc = sqlite3_prepare_v2(db, zQuery, -1, &pStmt, 0);
+        if (rc != SQLITE_OK)
+        {
+            sqlite3ErrorMsg(pParse, "invalid query_definition: %s",
+                            sqlite3_errmsg(db));
+            sqlite3_finalize(pStmt);
+            goto feature_cleanup;
+        }
+
+
+        nCol = sqlite3_column_count(pStmt);
+        for (i = 0; i < nCol; i++)
+        {
+            const char *zCol = sqlite3_column_name(pStmt, i);
+            if (zCol && sqlite3_stricmp(zCol, zPartCol) == 0)
+            {
+                found = 1;
+                break;
+            }
+        }
+        sqlite3_finalize(pStmt);
+
+        if (!found)
+        {
+            sqlite3ErrorMsg(pParse,
+                            "partition_column '%s' not found in query_definition",
+                            zPartCol);
+            goto feature_cleanup;
+        }
     }
 
     sqlitefsRegisterFeature(pParse, zName, zQuery, zPartCol, zGranularity);
@@ -442,25 +499,25 @@ feature_cleanup:
     sqlite3SelectDelete(db, pSelect);
 }
 
-
 /*
 ** Stub for REFRESH FEATURE -- implemented in Phase 3
 */
-void sqlite3RefreshFeature(Parse *pParse, Token *pName){
-  sqlite3ErrorMsg(pParse, "REFRESH FEATURE not yet implemented");
+void sqlite3RefreshFeature(Parse *pParse, Token *pName)
+{
+    sqlite3ErrorMsg(pParse, "REFRESH FEATURE not yet implemented");
 }
 
 /*
 ** Stub for DESCRIBE FEATURE -- implemented in Phase 4
 */
-void sqlite3DescribeFeature(Parse *pParse, Token *pName){
-  sqlite3ErrorMsg(pParse, "DESCRIBE FEATURE not yet implemented");
+void sqlite3DescribeFeature(Parse *pParse, Token *pName)
+{
+    sqlite3ErrorMsg(pParse, "DESCRIBE FEATURE not yet implemented");
 }
 
-
-void sqlite3DropFeature(Parse *pParse, Token *pName){
-  sqlite3ErrorMsg(pParse, "DROP FEATURE not yet implemented");
+void sqlite3DropFeature(Parse *pParse, Token *pName)
+{
+    sqlite3ErrorMsg(pParse, "DROP FEATURE not yet implemented");
 }
 
 #endif /* SQLITE_OMIT_FEATURE */
-
