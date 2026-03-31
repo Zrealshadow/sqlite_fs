@@ -217,6 +217,7 @@ static Keyword aKeywordTable[] = {
   { "DISTINCT",         "TK_DISTINCT",     ALWAYS,           5      },
   { "DO",               "TK_DO",           UPSERT,           2      },
   { "DROP",             "TK_DROP",         ALWAYS,           1      },
+  { "DESCRIBE",         "TK_DESCRIBE",     ALWAYS,           1      }, /*FEATURE EXTENSION*/
   { "END",              "TK_END",          ALWAYS,           1      },
   { "EACH",             "TK_EACH",         TRIGGER,          1      },
   { "ELSE",             "TK_ELSE",         ALWAYS,           2      },
@@ -227,7 +228,7 @@ static Keyword aKeywordTable[] = {
   { "EXISTS",           "TK_EXISTS",       ALWAYS,           4      },
   { "EXPLAIN",          "TK_EXPLAIN",      EXPLAIN,          1      },
   { "FAIL",             "TK_FAIL",         CONFLICT|TRIGGER, 1      },
-  { "FEATURE",          "TK_FEATURE",      ALWAYS,           1      },
+  { "FEATURE",          "TK_FEATURE",      ALWAYS,           1      }, /*FEATURE EXTENSION*/
   { "FILTER",           "TK_FILTER",       WINDOWFUNC,       4      },
   { "FIRST",            "TK_FIRST",        ALWAYS,           4      },
   { "FOLLOWING",        "TK_FOLLOWING",    WINDOWFUNC,       4      },
@@ -298,6 +299,7 @@ static Keyword aKeywordTable[] = {
   { "ROLLBACK",         "TK_ROLLBACK",     ALWAYS,           1      },
   { "ROW",              "TK_ROW",          TRIGGER,          1      },
   { "ROWS",             "TK_ROWS",         ALWAYS,           1      },
+  { "REFRESH",          "TK_REFRESH",      ALWAYS,           1      }, /* FEATURE EXTENSION*/
   { "SAVEPOINT",        "TK_SAVEPOINT",    ALWAYS,           1      },
   { "SELECT",           "TK_SELECT",       ALWAYS,           10     },
   { "SET",              "TK_SET",          ALWAYS,           10     },
