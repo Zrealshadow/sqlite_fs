@@ -3777,7 +3777,7 @@ static const char *(azHelp[]) = {
   ".expert                  EXPERIMENTAL. Suggest indexes for queries",
 #endif
   ".explain ?on|off|auto?   Change the EXPLAIN formatting mode.  Default: auto",
-  ".feature                 List all registered feature store definitions",
+  ".features ?PATTERN?      List feature store definitions matching LIKE pattern PATTERN",
   ".filectrl CMD ...        Run various sqlite3_file_control() operations",
   "   --schema SCHEMA         Use SCHEMA instead of \"main\"",
   "   --help                  Show CMD details",
@@ -9520,13 +9520,21 @@ static int do_meta_command(const char *zLine, ShellState *p){
   }else
 #endif
 
-  if( c=='f' && cli_strncmp(azArg[0], "feature", n)==0 ){
+  if( c=='f' && cli_strncmp(azArg[0], "features", n)==0 ){
+    sqlite3_str *pSql;
+    const char *zPattern = nArg>1 ? azArg[1] : 0;
     open_db(p, 0);
-    rc = shell_exec(p,
+    pSql = sqlite3_str_new(p->db);
+    sqlite3_str_appendall(pSql,
       "SELECT feature_name, partition_column, granularity,"
       "       created_at, query_definition"
-      "  FROM _sqlitefs_features ORDER BY feature_name",
-      0);
+      "  FROM _sqlite_fs_features");
+    if( zPattern ){
+      sqlite3_str_appendf(pSql, " WHERE feature_name LIKE %Q", zPattern);
+    }
+    sqlite3_str_appendall(pSql, " ORDER BY feature_name");
+    rc = shell_exec(p, sqlite3_str_value(pSql), 0);
+    sqlite3_str_free(pSql);
     if( rc ) rc = SQLITE_OK; /* table may not exist yet */
   }else
 
