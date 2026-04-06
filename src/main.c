@@ -58,7 +58,6 @@ static int (*const sqlite3BuiltinExtensions[])(sqlite3*) = {
 #ifdef SQLITE_ENABLE_FTS3
   sqlite3Fts3Init,
 #endif
-  sqlite3FeatureStoreInit, /* SQLite-FS feature store */
 #ifdef SQLITE_ENABLE_FTS5
   sqlite3Fts5Init,
 #endif

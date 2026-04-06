@@ -9526,9 +9526,7 @@ static int do_meta_command(const char *zLine, ShellState *p){
     open_db(p, 0);
     pSql = sqlite3_str_new(p->db);
     sqlite3_str_appendall(pSql,
-      "SELECT feature_name, partition_column, granularity,"
-      "       created_at, query_definition"
-      "  FROM _sqlite_fs_features");
+      "SELECT * FROM _sqlite_fs_features");
     if( zPattern ){
       sqlite3_str_appendf(pSql, " WHERE feature_name LIKE %Q", zPattern);
     }

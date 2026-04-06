@@ -9,19 +9,14 @@
 #define SQLITE_FEATURESTORE_H
 
 /*
-** Register all feature store SQL functions on a database connection.
-** Called during database initialization.
-*/
-int sqlite3FeatureStoreInit(sqlite3 *db);
-
-
-/*
 ** Parser handler functions -- called from parse.y grammar actions.
-** These are stubs for now; implemented in Phase 2+.
 */
 
-void sqlite3CreateFeature(Parse*, Token*, Select*, Token*, Token*, Token*, Token*);
-/* args: pName, pSelect, pLp '(', pRp ')', pPartCol, pGran */
+void sqlite3CreateFeature(Parse*, Token*, Token*, Token*, Token*,
+                          int, Token*, int, Select*, Token*, Token*);
+/* args: pName, pEntityTable, pTsCol, pGran,
+**       nWindowSize, pRefreshMode, nRetainCount,
+**       pSelect, pLp '(', pRp ')' */
 void sqlite3RefreshFeature(Parse*, Token*);                       
 void sqlite3DescribeFeature(Parse*, Token*);       
 void sqlite3DropFeature(Parse*, Token*);              

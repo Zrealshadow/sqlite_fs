@@ -218,8 +218,10 @@ static Keyword aKeywordTable[] = {
   { "DO",               "TK_DO",           UPSERT,           2      },
   { "DROP",             "TK_DROP",         ALWAYS,           1      },
   { "DESCRIBE",         "TK_DESCRIBE",     ALWAYS,           1      }, /*FEATURE EXTENSION*/
+  { "DURATION",         "TK_DURATION",     ALWAYS,           1      }, /*FEATURE EXTENSION*/
   { "END",              "TK_END",          ALWAYS,           1      },
   { "EACH",             "TK_EACH",         TRIGGER,          1      },
+  { "ENTITY",           "TK_ENTITY",       ALWAYS,           1      }, /*FEATURE EXTENSION*/
   { "ELSE",             "TK_ELSE",         ALWAYS,           2      },
   { "ESCAPE",           "TK_ESCAPE",       ALWAYS,           4      },
   { "EXCEPT",           "TK_EXCEPT",       COMPOUND,         4      },
@@ -239,6 +241,7 @@ static Keyword aKeywordTable[] = {
   { "GENERATED",        "TK_GENERATED",    ALWAYS,           1      },
   { "GLOB",             "TK_LIKE_KW",      ALWAYS,           3      },
   { "GROUP",            "TK_GROUP",        ALWAYS,           5      },
+  { "GRANULARITY",      "TK_GRANULARITY",  ALWAYS,           1      }, /*FEATURE EXTENSION*/
   { "GROUPS",           "TK_GROUPS",       WINDOWFUNC,       2      },
   { "HAVING",           "TK_HAVING",       ALWAYS,           5      },
   { "IF",               "TK_IF",           ALWAYS,           2      },
@@ -294,6 +297,7 @@ static Keyword aKeywordTable[] = {
   { "RENAME",           "TK_RENAME",       ALTER,            1      },
   { "REPLACE",          "TK_REPLACE",      CONFLICT,         10     },
   { "RESTRICT",         "TK_RESTRICT",     FKEY,             1      },
+  { "RETAIN",           "TK_RETAIN",       ALWAYS,           1      }, /*FEATURE EXTENSION*/
   { "RETURNING",        "TK_RETURNING",    RETURNING,        10     },
   { "RIGHT",            "TK_JOIN_KW",      ALWAYS,           0      },
   { "ROLLBACK",         "TK_ROLLBACK",     ALWAYS,           1      },
@@ -308,6 +312,7 @@ static Keyword aKeywordTable[] = {
   { "TEMPORARY",        "TK_TEMP",         ALWAYS,           1      },
   { "THEN",             "TK_THEN",         ALWAYS,           3      },
   { "TIES",             "TK_TIES",         WINDOWFUNC,       3      },
+  { "TIMESTAMP",        "TK_TIMESTAMP",    ALWAYS,           1      }, /*FEATURE EXTENSION*/
   { "TO",               "TK_TO",           ALWAYS,           3      },
   { "TRANSACTION",      "TK_TRANSACTION",  ALWAYS,           1      },
   { "TRIGGER",          "TK_TRIGGER",      TRIGGER,          1      },
