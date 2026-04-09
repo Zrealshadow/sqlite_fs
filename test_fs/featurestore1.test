@@ -14,17 +14,40 @@ source $testdir/tester.tcl
 #     [ RETAIN    <n> ]
 #   AS ( <select> );
 #
+# Design notes (current phase):
+#   - Granularity validated at CREATE time (HOUR | DAY only).
+#   - Timestamp column existence NOT validated at CREATE time
+#     (deferred to REFRESH).
+#   - Query table/column existence NOT validated at CREATE time;
+#     CREATE VIEW accepts forward references — caught at query time.
+#   - SQL syntax errors inside AS (...) ARE caught (via CREATE VIEW).
+#   - Duplicate feature names rejected by PRIMARY KEY constraint.
+#   - _sqlite_fs_features columns: feature_name, entity_table,
+#     timestamp_column, col_gran, gran_expr, window_size,
+#     feature_type, refresh_mode, retention_count, created_at,
+#     last_refreshed.
+#   - Removed columns: query_definition, source_tables,
+#     feat_col_names, feat_col_types.
+#   - Each successful CREATE FEATURE also creates:
+#     CREATE VIEW _sqlite_fs_view_<name> AS <query>
+#
 # Sections:
 #   0.x  Schema setup
 #   1.x  Success — required clauses only (SNAPSHOT defaults)
-#   2.x  (next section)
+#   2.x  Success — AGGREGATE (DURATION) + optional clauses
+#   3.x  Success — granularity variants and gran_expr derivation
+#   4.x  Failure — invalid granularity (HOUR|DAY only)
+#   5.x  Success — timestamp not validated at CREATE time
+#   6.x  Failure — SQL syntax error inside AS (...)
+#   7.x  Failure — missing required clauses (parser-level)
+#   8.x  Corner cases
+#   9.x  Final registry state
 # ============================================================
 
 # ------------------------------------------------------------
 # 0.x  Schema setup — reused by all tests
 # ------------------------------------------------------------
 
-# 0.1  Entity table
 do_execsql_test featurestore1-0.1 {
     CREATE TABLE users (
         user_id  INTEGER PRIMARY KEY,
@@ -32,7 +55,6 @@ do_execsql_test featurestore1-0.1 {
     );
 } {}
 
-# 0.2  Event/fact table with a timestamp column
 do_execsql_test featurestore1-0.2 {
     CREATE TABLE events (
         event_id   INTEGER PRIMARY KEY,
@@ -43,10 +65,10 @@ do_execsql_test featurestore1-0.2 {
 } {}
 
 # ============================================================
-# 1.x  Success — required clauses only, verify default values
+# 1.x  Success — required clauses only, verify defaults
 # ============================================================
 
-# 1.1  Minimal valid CREATE FEATURE — no optional clauses, no DURATION
+# 1.1  Minimal valid CREATE FEATURE — no optional clauses
 do_execsql_test featurestore1-1.1 {
     CREATE FEATURE snap_basic
         ENTITY users
@@ -59,21 +81,32 @@ do_execsql_test featurestore1-1.1 {
     );
 } {}
 
-# 1.2  All stored fields: defaults (SNAPSHOT, INCREMENTAL, NULL window/retain)
-#       and required fields (entity_table, timestamp_column, col_gran, source_tables)
+# 1.2  Verify stored profile: feature_type=SNAPSHOT, INCREMENTAL default,
+#      NULL window_size and retention_count
 do_execsql_test featurestore1-1.2 {
-    SELECT feature_name, feature_type, window_size, refresh_mode,
-           retention_count, entity_table, timestamp_column,
-           col_gran, source_tables
+    SELECT feature_name, entity_table, timestamp_column, col_gran,
+           feature_type, window_size, refresh_mode, retention_count
     FROM _sqlite_fs_features
     WHERE feature_name = 'snap_basic';
-} {snap_basic SNAPSHOT {} INCREMENTAL {} users event_time DAY {["events"]}}
+} {snap_basic users event_time DAY SNAPSHOT {} INCREMENTAL {}}
+
+# 1.3  gran_expr derived from timestamp_col + DAY granularity
+do_execsql_test featurestore1-1.3 {
+    SELECT gran_expr FROM _sqlite_fs_features
+    WHERE feature_name = 'snap_basic';
+} {DATE(event_time)}
+
+# 1.4  CREATE FEATURE also creates _sqlite_fs_view_<name> atomically
+do_execsql_test featurestore1-1.4 {
+    SELECT name FROM sqlite_schema
+    WHERE type = 'view' AND name = '_sqlite_fs_view_snap_basic';
+} {_sqlite_fs_view_snap_basic}
 
 # ============================================================
 # 2.x  Success — AGGREGATE (DURATION present) + optional clauses
 # ============================================================
 
-# 2.1  DURATION n sets feature_type=AGGREGATE and window_size=n
+# 2.1  DURATION n → feature_type=AGGREGATE, window_size=n
 do_execsql_test featurestore1-2.1 {
     CREATE FEATURE agg_7day
         ENTITY users
@@ -92,7 +125,7 @@ do_execsql_test featurestore1-2.2 {
     WHERE feature_name = 'agg_7day';
 } {AGGREGATE 7}
 
-# 2.3  DURATION 1 — minimum window; still AGGREGATE
+# 2.3  DURATION 1 — minimum window, still AGGREGATE
 do_execsql_test featurestore1-2.3 {
     CREATE FEATURE agg_1day
         ENTITY users
@@ -111,7 +144,7 @@ do_execsql_test featurestore1-2.4 {
     WHERE feature_name = 'agg_1day';
 } {AGGREGATE 1}
 
-# 2.5  REFRESH FULL is stored; overrides the INCREMENTAL default
+# 2.5  REFRESH FULL overrides INCREMENTAL default
 do_execsql_test featurestore1-2.5 {
     CREATE FEATURE agg_full_refresh
         ENTITY users
@@ -131,7 +164,7 @@ do_execsql_test featurestore1-2.6 {
     WHERE feature_name = 'agg_full_refresh';
 } {FULL}
 
-# 2.7  REFRESH INCREMENTAL can be stated explicitly (same as default)
+# 2.7  REFRESH INCREMENTAL explicit (same as default)
 do_execsql_test featurestore1-2.7 {
     CREATE FEATURE agg_incr_explicit
         ENTITY users
@@ -171,7 +204,7 @@ do_execsql_test featurestore1-2.10 {
     WHERE feature_name = 'agg_with_retain';
 } {30}
 
-# 2.11  All optional clauses together — full profile round-trip
+# 2.11  All optional clauses — full profile round-trip
 do_execsql_test featurestore1-2.11 {
     CREATE FEATURE agg_all_opts
         ENTITY users
@@ -194,10 +227,10 @@ do_execsql_test featurestore1-2.12 {
 } {AGGREGATE 14 FULL 4}
 
 # ============================================================
-# 3.x  Success — granularity variants, source_tables, timestamp alias
+# 3.x  Granularity variants and gran_expr derivation
 # ============================================================
 
-# 3.1  GRANULARITY HOUR is accepted and stored
+# 3.1  GRANULARITY HOUR accepted
 do_execsql_test featurestore1-3.1 {
     CREATE FEATURE hourly_feat
         ENTITY users
@@ -216,156 +249,86 @@ do_execsql_test featurestore1-3.2 {
     WHERE feature_name = 'hourly_feat';
 } {HOUR}
 
-# 3.3  GRANULARITY DAY is accepted and stored
+# 3.3  gran_expr for HOUR uses strftime
 do_execsql_test featurestore1-3.3 {
-    SELECT col_gran FROM _sqlite_fs_features
-    WHERE feature_name = 'snap_basic';
-} {DAY}
+    SELECT gran_expr FROM _sqlite_fs_features
+    WHERE feature_name = 'hourly_feat';
+} {{strftime('%Y-%m-%dT%H', event_time)}}
 
-# 3.4  source_tables captures a single FROM table
+# 3.4  Each successful CREATE FEATURE creates a corresponding view
 do_execsql_test featurestore1-3.4 {
-    SELECT source_tables FROM _sqlite_fs_features
-    WHERE feature_name = 'snap_basic';
-} {["events"]}
-
-# 3.5  source_tables captures all tables in a JOIN
-do_execsql_test featurestore1-3.5 {
-    CREATE FEATURE join_feat
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY DAY
-    AS (
-        SELECT e.user_id, e.event_time, u.name
-        FROM events AS e
-        JOIN users AS u ON e.user_id = u.user_id
-    );
-} {}
-
-do_execsql_test featurestore1-3.6 {
-    SELECT source_tables FROM _sqlite_fs_features
-    WHERE feature_name = 'join_feat';
-} {["events","users"]}
-
-# 3.7  TIMESTAMP can match a column alias in the SELECT output
-do_execsql_test featurestore1-3.7 {
-    CREATE FEATURE aliased_ts
-        ENTITY users
-        TIMESTAMP ts
-        GRANULARITY DAY
-    AS (
-        SELECT user_id, event_time AS ts, COUNT(*) AS cnt
-        FROM events
-        GROUP BY user_id, event_time
-    );
-} {}
-
-do_execsql_test featurestore1-3.8 {
-    SELECT timestamp_column FROM _sqlite_fs_features
-    WHERE feature_name = 'aliased_ts';
-} {ts}
-
-# 3.9  ENTITY table name is stored as-is — not validated against existing tables
-do_execsql_test featurestore1-3.9 {
-    CREATE FEATURE ghost_entity
-        ENTITY nonexistent_table
-        TIMESTAMP event_time
-        GRANULARITY DAY
-    AS (
-        SELECT user_id, event_time FROM events
-    );
-} {}
-
-do_execsql_test featurestore1-3.10 {
-    SELECT entity_table FROM _sqlite_fs_features
-    WHERE feature_name = 'ghost_entity';
-} {nonexistent_table}
+    SELECT name FROM sqlite_schema
+    WHERE type = 'view'
+      AND name IN ('_sqlite_fs_view_hourly_feat', '_sqlite_fs_view_agg_7day')
+    ORDER BY name;
+} {_sqlite_fs_view_agg_7day _sqlite_fs_view_hourly_feat}
 
 # ============================================================
 # 4.x  Failure — invalid granularity (only HOUR | DAY accepted)
 # ============================================================
 
-# 4.1  WEEK is rejected
 do_catchsql_test featurestore1-4.1 {
     CREATE FEATURE bad_gran_week
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY WEEK
-    AS (
-        SELECT user_id, event_time FROM events
-    );
+        ENTITY users TIMESTAMP event_time GRANULARITY WEEK
+    AS (SELECT user_id, event_time FROM events);
 } {1 {granularity must be HOUR or DAY (use WINDOW + DAY for week/month/year)}}
 
-# 4.2  MONTH is rejected
 do_catchsql_test featurestore1-4.2 {
     CREATE FEATURE bad_gran_month
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY MONTH
-    AS (
-        SELECT user_id, event_time FROM events
-    );
+        ENTITY users TIMESTAMP event_time GRANULARITY MONTH
+    AS (SELECT user_id, event_time FROM events);
 } {1 {granularity must be HOUR or DAY (use WINDOW + DAY for week/month/year)}}
 
-# 4.3  YEAR is rejected
 do_catchsql_test featurestore1-4.3 {
     CREATE FEATURE bad_gran_year
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY YEAR
-    AS (
-        SELECT user_id, event_time FROM events
-    );
+        ENTITY users TIMESTAMP event_time GRANULARITY YEAR
+    AS (SELECT user_id, event_time FROM events);
 } {1 {granularity must be HOUR or DAY (use WINDOW + DAY for week/month/year)}}
 
-# 4.4  Arbitrary identifier is rejected
 do_catchsql_test featurestore1-4.4 {
     CREATE FEATURE bad_gran_minute
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY MINUTE
-    AS (
-        SELECT user_id, event_time FROM events
-    );
+        ENTITY users TIMESTAMP event_time GRANULARITY MINUTE
+    AS (SELECT user_id, event_time FROM events);
 } {1 {granularity must be HOUR or DAY (use WINDOW + DAY for week/month/year)}}
 
-# 4.5  Failed attempts leave no row in the registry
+# 4.5  Failed granularity attempts leave no row and no view
 do_execsql_test featurestore1-4.5 {
     SELECT COUNT(*) FROM _sqlite_fs_features
-    WHERE feature_name IN (
-        'bad_gran_week', 'bad_gran_month',
-        'bad_gran_year', 'bad_gran_minute'
-    );
+    WHERE feature_name IN ('bad_gran_week','bad_gran_month',
+                           'bad_gran_year','bad_gran_minute');
+} {0}
+
+do_execsql_test featurestore1-4.6 {
+    SELECT COUNT(*) FROM sqlite_schema
+    WHERE type = 'view'
+      AND name IN ('_sqlite_fs_view_bad_gran_week','_sqlite_fs_view_bad_gran_month',
+                   '_sqlite_fs_view_bad_gran_year','_sqlite_fs_view_bad_gran_minute');
 } {0}
 
 # ============================================================
-# 5.x  Failure — TIMESTAMP column not in SELECT output
+# 5.x  Timestamp column NOT validated at CREATE time
+#       Validation is deferred to REFRESH.
 # ============================================================
 
-# 5.1  Column named in TIMESTAMP clause is completely absent from SELECT
-do_catchsql_test featurestore1-5.1 {
-    CREATE FEATURE bad_ts_absent
+# 5.1  TIMESTAMP names a column absent from SELECT output — still accepted
+do_execsql_test featurestore1-5.1 {
+    CREATE FEATURE ts_absent
         ENTITY users
         TIMESTAMP no_such_col
         GRANULARITY DAY
     AS (
         SELECT user_id, event_time FROM events
     );
-} {1 {timestamp_column 'no_such_col' not in query output}}
+} {}
 
-# 5.2  Column exists in the table but is not projected in SELECT
-do_catchsql_test featurestore1-5.2 {
-    CREATE FEATURE bad_ts_unprojected
-        ENTITY users
-        TIMESTAMP action
-        GRANULARITY DAY
-    AS (
-        SELECT user_id, event_time FROM events
-    );
-} {1 {timestamp_column 'action' not in query output}}
+do_execsql_test featurestore1-5.2 {
+    SELECT timestamp_column FROM _sqlite_fs_features
+    WHERE feature_name = 'ts_absent';
+} {no_such_col}
 
-# 5.3  Column appears in WHERE clause but is not in SELECT output
-do_catchsql_test featurestore1-5.3 {
-    CREATE FEATURE bad_ts_where_only
+# 5.3  TIMESTAMP column appears only in WHERE — accepted at CREATE time
+do_execsql_test featurestore1-5.3 {
+    CREATE FEATURE ts_where_only
         ENTITY users
         TIMESTAMP event_time
         GRANULARITY DAY
@@ -375,72 +338,27 @@ do_catchsql_test featurestore1-5.3 {
         WHERE event_time > '2026-01-01'
         GROUP BY user_id
     );
-} {1 {timestamp_column 'event_time' not in query output}}
-
-# 5.4  Column appears in GROUP BY but not in SELECT output
-do_catchsql_test featurestore1-5.4 {
-    CREATE FEATURE bad_ts_groupby_only
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY DAY
-    AS (
-        SELECT user_id, COUNT(*) AS cnt
-        FROM events
-        GROUP BY user_id, event_time
-    );
-} {1 {timestamp_column 'event_time' not in query output}}
-
-# 5.5  Failed attempts leave no row in the registry
-do_execsql_test featurestore1-5.5 {
-    SELECT COUNT(*) FROM _sqlite_fs_features
-    WHERE feature_name IN (
-        'bad_ts_absent', 'bad_ts_unprojected',
-        'bad_ts_where_only', 'bad_ts_groupby_only'
-    );
-} {0}
+} {}
 
 # ============================================================
-# 6.x  Failure — invalid query_definition (caught by sqlite3_prepare_v2)
+# 6.x  Failure — SQL syntax error inside AS (...) caught by CREATE VIEW
 # ============================================================
 
-# 6.1  Query references a table that does not exist
-do_catchsql_test featurestore1-6.1 {
-    CREATE FEATURE bad_query_table
+# 6.1  Bad table/column references are NOT caught at CREATE time;
+#      SQLite defers view reference validation to query time
+do_execsql_test featurestore1-6.1 {
+    CREATE FEATURE bad_table_ref
         ENTITY users
         TIMESTAMP event_time
         GRANULARITY DAY
     AS (
         SELECT user_id, event_time FROM no_such_table
     );
-} {1 {invalid query_definition: no such table: no_such_table}}
+} {}
 
-# 6.2  Query references a column that does not exist on the table
+# 6.2  SQL syntax error inside AS (...) — caught during CREATE VIEW parsing
 do_catchsql_test featurestore1-6.2 {
-    CREATE FEATURE bad_query_col
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY DAY
-    AS (
-        SELECT user_id, event_time, ghost_col FROM events
-    );
-} {1 {invalid query_definition: no such column: ghost_col}}
-
-# 6.3  JOIN against a non-existent table
-do_catchsql_test featurestore1-6.3 {
-    CREATE FEATURE bad_query_join
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY DAY
-    AS (
-        SELECT e.user_id, e.event_time
-        FROM events AS e
-        JOIN no_such_users AS u ON e.user_id = u.id
-    );
-} {1 {invalid query_definition: no such table: no_such_users}}
-
-# 6.4  SQL syntax error inside AS (...) — broken SELECT
-do_catchsql_test featurestore1-6.4 {
-    CREATE FEATURE bad_query_syntax
+    CREATE FEATURE bad_syntax
         ENTITY users
         TIMESTAMP event_time
         GRANULARITY DAY
@@ -449,113 +367,84 @@ do_catchsql_test featurestore1-6.4 {
     );
 } {1 {near "FROM": syntax error}}
 
-# 6.5  Failed attempts leave no row in the registry
-do_execsql_test featurestore1-6.5 {
+# 6.3  Syntax error rolls back atomically: no metadata row, no view
+do_execsql_test featurestore1-6.3 {
     SELECT COUNT(*) FROM _sqlite_fs_features
-    WHERE feature_name IN (
-        'bad_query_table', 'bad_query_col',
-        'bad_query_join',  'bad_query_syntax'
-    );
+    WHERE feature_name = 'bad_syntax';
+} {0}
+
+do_execsql_test featurestore1-6.4 {
+    SELECT COUNT(*) FROM sqlite_schema
+    WHERE type = 'view' AND name = '_sqlite_fs_view_bad_syntax';
 } {0}
 
 # ============================================================
 # 7.x  Failure — missing required clauses (parser-level errors)
 # ============================================================
 
-# 7.1  Missing ENTITY — parser sees TIMESTAMP where ENTITY expected
 do_catchsql_test featurestore1-7.1 {
     CREATE FEATURE no_entity
-        TIMESTAMP event_time
-        GRANULARITY DAY
-    AS (
-        SELECT user_id, event_time FROM events
-    );
+        TIMESTAMP event_time GRANULARITY DAY
+    AS (SELECT user_id, event_time FROM events);
 } {1 {near "TIMESTAMP": syntax error}}
 
-# 7.2  Missing TIMESTAMP — parser sees GRANULARITY where TIMESTAMP expected
 do_catchsql_test featurestore1-7.2 {
     CREATE FEATURE no_timestamp
-        ENTITY users
-        GRANULARITY DAY
-    AS (
-        SELECT user_id, event_time FROM events
-    );
+        ENTITY users GRANULARITY DAY
+    AS (SELECT user_id, event_time FROM events);
 } {1 {near "GRANULARITY": syntax error}}
 
-# 7.3  Missing GRANULARITY — parser sees AS where GRANULARITY expected
 do_catchsql_test featurestore1-7.3 {
     CREATE FEATURE no_granularity
-        ENTITY users
-        TIMESTAMP event_time
-    AS (
-        SELECT user_id, event_time FROM events
-    );
+        ENTITY users TIMESTAMP event_time
+    AS (SELECT user_id, event_time FROM events);
 } {1 {near "AS": syntax error}}
 
-# 7.4  Missing AS (...) entirely — parser sees ; where AS expected
 do_catchsql_test featurestore1-7.4 {
     CREATE FEATURE no_as
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY DAY;
+        ENTITY users TIMESTAMP event_time GRANULARITY DAY;
 } {1 {near ";": syntax error}}
 
-# 7.5  AS present but without parentheses — parser sees SELECT where LP expected
 do_catchsql_test featurestore1-7.5 {
     CREATE FEATURE no_parens
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY DAY
+        ENTITY users TIMESTAMP event_time GRANULARITY DAY
     AS SELECT user_id, event_time FROM events;
 } {1 {near "SELECT": syntax error}}
 
-# 7.6  Failed attempts leave no row in the registry
 do_execsql_test featurestore1-7.6 {
     SELECT COUNT(*) FROM _sqlite_fs_features
-    WHERE feature_name IN (
-        'no_entity', 'no_timestamp', 'no_granularity',
-        'no_as', 'no_parens'
-    );
+    WHERE feature_name IN ('no_entity','no_timestamp','no_granularity',
+                           'no_as','no_parens');
 } {0}
 
 # ============================================================
 # 8.x  Corner cases
 # ============================================================
 
-# 8.1  Duplicate feature name — rejected with specific error message
+# 8.1  Duplicate feature name — rejected by PRIMARY KEY constraint
 do_catchsql_test featurestore1-8.1 {
     CREATE FEATURE snap_basic
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY DAY
-        DURATION 5
-        RETAIN 10
+        ENTITY users TIMESTAMP event_time GRANULARITY DAY DURATION 5 RETAIN 10
     AS (
         SELECT user_id, event_time, COUNT(*) AS cnt
-        FROM events
-        GROUP BY user_id, event_time
+        FROM events GROUP BY user_id, event_time
     );
-} {1 {feature 'snap_basic' already exists}}
+} {1 {UNIQUE constraint failed: _sqlite_fs_features.feature_name}}
 
-# 8.2  Original row is unchanged after the rejected duplicate
+# 8.2  Original row is unchanged after rejected duplicate
 do_execsql_test featurestore1-8.2 {
     SELECT feature_type, window_size, retention_count
     FROM _sqlite_fs_features
     WHERE feature_name = 'snap_basic';
 } {SNAPSHOT {} {}}
 
-# 8.3  RETAIN 0 is accepted — zero retention means evict all after refresh
+# 8.3  RETAIN 0 is accepted
 do_execsql_test featurestore1-8.3 {
     CREATE FEATURE retain_zero
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY DAY
-        DURATION 1
-        RETAIN 0
+        ENTITY users TIMESTAMP event_time GRANULARITY DAY DURATION 1 RETAIN 0
     AS (
         SELECT user_id, event_time, COUNT(*) AS cnt
-        FROM events
-        GROUP BY user_id, event_time
+        FROM events GROUP BY user_id, event_time
     );
 } {}
 
@@ -564,48 +453,33 @@ do_execsql_test featurestore1-8.4 {
     WHERE feature_name = 'retain_zero';
 } {0}
 
-# 8.5  SELECT with only the timestamp column — no value columns; still valid
+# 8.5  GRANULARITY case-insensitive — lowercase 'day' accepted
 do_execsql_test featurestore1-8.5 {
-    CREATE FEATURE ts_only
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY DAY
-    AS (
-        SELECT event_time FROM events
-    );
+    CREATE FEATURE lower_gran
+        ENTITY users TIMESTAMP event_time GRANULARITY day
+    AS (SELECT user_id, event_time FROM events);
 } {}
 
 do_execsql_test featurestore1-8.6 {
-    SELECT feature_name FROM _sqlite_fs_features
-    WHERE feature_name = 'ts_only';
-} {ts_only}
-
-# 8.7  GRANULARITY case-insensitive — lowercase 'day' is accepted
-do_execsql_test featurestore1-8.7 {
-    CREATE FEATURE lower_gran
-        ENTITY users
-        TIMESTAMP event_time
-        GRANULARITY day
-    AS (
-        SELECT user_id, event_time FROM events
-    );
-} {}
-
-do_execsql_test featurestore1-8.8 {
     SELECT col_gran FROM _sqlite_fs_features
     WHERE feature_name = 'lower_gran';
 } {day}
 
 # ============================================================
-# 9.x  Final registry state — only valid features were registered
+# 9.x  Final registry state — only valid features registered
 # ============================================================
 
-# 9.1  All features created in sections 1–3 and 8 are present;
-#      no failed attempt left a stray row
+# 9.1  All successfully created features are present
 do_execsql_test featurestore1-9.1 {
     SELECT feature_name FROM _sqlite_fs_features ORDER BY feature_name;
 } {agg_1day agg_7day agg_all_opts agg_full_refresh agg_incr_explicit
-   agg_with_retain aliased_ts ghost_entity hourly_feat join_feat
-   lower_gran retain_zero snap_basic ts_only}
+   agg_with_retain bad_table_ref hourly_feat lower_gran retain_zero
+   snap_basic ts_absent ts_where_only}
+
+# 9.2  Each registered feature has a corresponding view in sqlite_schema
+do_execsql_test featurestore1-9.2 {
+    SELECT COUNT(*) FROM sqlite_schema
+    WHERE type = 'view' AND name LIKE '_sqlite_fs_view_%';
+} {13}
 
 finish_test

@@ -9526,13 +9526,16 @@ static int do_meta_command(const char *zLine, ShellState *p){
     open_db(p, 0);
     pSql = sqlite3_str_new(p->db);
     sqlite3_str_appendall(pSql,
-      "SELECT * FROM _sqlite_fs_features");
+      "SELECT feature_name FROM _sqlite_fs_features");
     if( zPattern ){
       sqlite3_str_appendf(pSql, " WHERE feature_name LIKE %Q", zPattern);
     }
     sqlite3_str_appendall(pSql, " ORDER BY feature_name");
+    modePush(p);
+    modeChange(p, MODE_Split);
     rc = shell_exec(p, sqlite3_str_value(pSql), 0);
     sqlite3_str_free(pSql);
+    modePop(p);
     if( rc ) rc = SQLITE_OK; /* table may not exist yet */
   }else
 
@@ -11293,6 +11296,7 @@ static int do_meta_command(const char *zLine, ShellState *p){
         sqlite3_str_appendf(pSql,
             " WHERE type IN ('table','view')"
             "   AND name NOT LIKE 'sqlite__%%' ESCAPE '_'"
+            "   AND name NOT LIKE '_sqlite\\_fs\\___%%' ESCAPE '\\'"
         );
         if( zPattern ){
           sqlite3_str_appendf(pSql," AND name LIKE %Q", zPattern);
