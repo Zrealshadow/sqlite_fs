@@ -35,6 +35,9 @@
 #define SQLITEFS_COL_CREATED "created_at"
 #define SQLITEFS_COL_REFRESHED "last_refreshed"
 
+/* _feat_<name> built-in columns */
+#define SQLITEFS_COL_VERSION "version"
+
 /* _sqlite_fs_partitions columns */
 #define SQLITEFS_PCOL_FEATNAME "feature_name"
 #define SQLITEFS_PCOL_PARTKEY "partition_key"
@@ -119,13 +122,9 @@ struct FeatureDef
     /* identity */
     char *zName; /* feature name */
 
-    /*transient - used when construct the feature profile in memory*/
-    char *zFeatTable; /* derived: _sqlite_fs_feat_<name> */
-    char *zViewName;  /* derived: _sqlite_fs_view_<name> */
-
-    /*TODO: seems when we have pFeatTable and pViews, we don't need zFeatTable and zViewName */
-    Table *pFeatTable; /* derived: pointer to Table object for zFeatTable */
-    Table *pView;      /* derived: pointer to Table object for zViewName */
+    /* Table pointers populated by sqlitefs_load_feature_def */
+    Table *pFeatTable; /* pointer to _sqlite_fs_feat_<name> table */
+    Table *pView;      /* pointer to _sqlite_fs_view_<name> view */
 
     /* transient — used for view creation, never stored in DB */
     char *zQuery; /* raw SELECT text extracted from pLp/pRp */
@@ -151,8 +150,6 @@ static void sqlitefs_free_feature_def(FeatureDef *p)
     if (p == 0)
         return;
     sqlite3_free(p->zName);
-    sqlite3_free(p->zFeatTable);
-    sqlite3_free(p->zViewName);
     sqlite3_free(p->zQuery);
     sqlite3_free(p->zEntityTable);
     sqlite3_free(p->zTimestampCol);
@@ -162,122 +159,33 @@ static void sqlitefs_free_feature_def(FeatureDef *p)
 }
 
 /*
-** sqlitefs_init_feat_table()
-**
-** Ensure the physical feature table _feat_<name> exists and return
-** a pointer to its Table object.
-**
-** Fast path: sqlite3FindTable(_feat_<name>) succeeds → return it.
-** Slow path: derive column schema from _sqlite_fs_view_<name> via
-**   sqlite3ViewGetColumnNames, build and execute CREATE TABLE,
-**   then FindTable again to return the new Table*.
-**
-** Returns Table* on success (owned by the schema — caller must NOT free).
-** Returns NULL on error (pParse->zErrMsg is set).
+** sqlitefs_init_feat_table() logic is now integrated into sqlitefs_load_feature_def().
 */
-static Table *sqlitefs_init_feat_table(Parse *pParse, const FeatureDef *pDef)
-{
-    sqlite3 *db = pParse->db;
-    Table *pFeat;
-    Table *pView;
-    char *zDdl;
-    char *zFinal;
-    int i, rc;
-
-    /* ---- Fast path: table already exists ---- */
-    pFeat = sqlite3FindTable(db, pDef->zFeatTable, 0);
-    if (pFeat)
-        return pFeat;
-
-    /* ---- Slow path: derive schema from the view ---- */
-    pView = sqlite3FindTable(db, pDef->zViewName, 0);
-    if (!pView)
-    {
-        sqlite3ErrorMsg(pParse, "view for feature '%s' not found", pDef->zName);
-        return 0;
-    }
-
-    if (sqlite3ViewGetColumnNames(pParse, pView))
-        return 0;
-    if (pView->nCol == 0)
-    {
-        sqlite3ErrorMsg(pParse, "view for feature '%s' has no columns",
-                        pDef->zName);
-        return 0;
-    }
-
-    /* Build DDL: CREATE TABLE "<feat_table>"(<col1> <type1>, ...) */
-    zDdl = sqlite3_mprintf("CREATE TABLE \"%w\"(", pDef->zFeatTable);
-    for (i = 0; zDdl && i < pView->nCol; i++)
-    {
-        Column *pCol = &pView->aCol[i];
-        const char *zType = sqlite3ColumnType(pCol, 0);
-        char *zNew;
-        if (zType)
-        {
-            zNew = sqlite3_mprintf("%s%s\"%w\" %s", zDdl,
-                                   i ? ", " : "", pCol->zCnName, zType);
-        }
-        else
-        {
-            zNew = sqlite3_mprintf("%s%s\"%w\"", zDdl,
-                                   i ? ", " : "", pCol->zCnName);
-        }
-        sqlite3_free(zDdl);
-        zDdl = zNew;
-    }
-
-    if (!zDdl)
-    {
-        sqlite3OomFault(db);
-        return 0;
-    }
-
-    zFinal = sqlite3_mprintf("%s)", zDdl);
-    sqlite3_free(zDdl);
-    if (!zFinal)
-    {
-        sqlite3OomFault(db);
-        return 0;
-    }
-
-    /* Execute the CREATE TABLE */
-    rc = sqlite3_exec(db, zFinal, 0, 0, 0);
-    sqlite3_free(zFinal);
-    if (rc != SQLITE_OK)
-    {
-        sqlite3ErrorMsg(pParse, "create feature table: %s", sqlite3_errmsg(db));
-        return 0;
-    }
-
-    /* Look up the newly created table */
-    pFeat = sqlite3FindTable(db, pDef->zFeatTable, 0);
-    if (!pFeat)
-    {
-        sqlite3ErrorMsg(pParse, "feature table '%s' not found after creation",
-                        pDef->zFeatTable);
-    }
-    return pFeat;
-}
 
 /* ============================================================
-** sqlitefs_LoadFeatureDef()
+** sqlitefs_load_feature_def()
 **
 ** Load the full feature profile for zName into a heap-allocated
-** FeatureDef. Caller must free with sqlitefs_free_feature_def().
+** FeatureDef. Also locates the view and ensures the feature table
+** exists (creating it from view schema if needed).
+**
+** Caller must free with sqlitefs_free_feature_def().
 ** Returns SQLITE_OK on success.
 ** Returns SQLITE_NOTFOUND if the feature does not exist.
 ** Returns SQLITE_ERROR on a database error (see sqlite3_errmsg).
 ** Returns SQLITE_NOMEM on allocation failure.
 ** ============================================================ */
 static int sqlitefs_load_feature_def(
-    sqlite3 *db,
+    Parse *pParse,
     const char *zName,
     FeatureDef **ppDef /* OUT */
 )
 {
+    sqlite3 *db = pParse->db;
     sqlite3_stmt *pStmt = 0;
     char *zSql = 0;
+    char *zViewName = 0;
+    char *zFeatName = 0;
     FeatureDef *p = 0;
     int rc;
 
@@ -295,7 +203,8 @@ static int sqlitefs_load_feature_def(
     if (sqlite3_step(pStmt) != SQLITE_ROW)
     {
         sqlite3_finalize(pStmt);
-        return SQLITE_NOTFOUND;
+        sqlite3ErrorMsg(pParse, "feature '%s' not found", zName);
+        return SQLITE_ERROR;
     }
 
     p = sqlite3_malloc(sizeof(FeatureDef));
@@ -323,16 +232,14 @@ static int sqlitefs_load_feature_def(
                       : sqlite3_column_int(pStmt, 7);
 
     p->zName = sqlite3_mprintf("%s", zName);
-    p->zFeatTable = sqlite3_mprintf("%s%s", SQLITEFS_FEATURE_TABLE_PREFIX, zName);
-    p->zViewName = sqlite3_mprintf("%s%s", SQLITEFS_VIEW_PREFIX, zName);
     p->zEntityTable = sqlite3_mprintf("%s", zRawEntTbl ? zRawEntTbl : "");
     p->zTimestampCol = sqlite3_mprintf("%s", zRawTsCol ? zRawTsCol : "");
     p->zGranularity = sqlite3_mprintf("%s", zRawGran ? zRawGran : "DAY");
     p->zGranExpr = sqlite3_mprintf("%s", zRawGranExpr ? zRawGranExpr : "");
     p->nWindowSize = nWindow;
 
-    sqlite3_finalize(pStmt);
-
+    /* Resolve type/refresh before finalize — column text pointers
+    ** become invalid after sqlite3_finalize(). */
     if (zRawFeatType && sqlite3_stricmp(zRawFeatType, "SNAPSHOT") == 0)
         p->eFeatureType = SQLITEFS_TYPE_SNAPSHOT;
     else
@@ -343,18 +250,130 @@ static int sqlitefs_load_feature_def(
     else
         p->eRefreshMode = SQLITEFS_REFRESH_INCR;
 
+    sqlite3_finalize(pStmt);
+
     p->nRetentionCount = nRetain;
 
-    if (!p->zName || !p->zFeatTable || !p->zViewName ||
-        !p->zEntityTable || !p->zTimestampCol ||
+    if (!p->zName || !p->zEntityTable || !p->zTimestampCol ||
         !p->zGranularity || !p->zGranExpr)
     {
         sqlitefs_free_feature_def(p);
         return SQLITE_NOMEM;
     }
 
+    /* --- Locate view and ensure feature table exists --- */
+    zViewName = sqlite3_mprintf("%s%s", SQLITEFS_VIEW_PREFIX, zName);
+    zFeatName = sqlite3_mprintf("%s%s", SQLITEFS_FEATURE_TABLE_PREFIX, zName);
+    if (!zViewName || !zFeatName)
+    {
+        rc = SQLITE_NOMEM;
+        goto load_cleanup;
+    }
+
+    /* Find and validate the view */
+    p->pView = sqlite3FindTable(db, zViewName, 0);
+    if (!p->pView || !IsView(p->pView))
+    {
+        sqlite3ErrorMsg(pParse, "view for feature '%s' not found", p->zName);
+        rc = SQLITE_ERROR;
+        goto load_cleanup;
+    }
+
+    /* Ensure view column names are populated */
+    if (sqlite3ViewGetColumnNames(pParse, p->pView))
+    {
+        rc = SQLITE_ERROR;
+        goto load_cleanup;
+    }
+
+    /* Fast path: feature table already exists */
+    p->pFeatTable = sqlite3FindTable(db, zFeatName, 0);
+    if (!p->pFeatTable)
+    {
+        /* Slow path: create feature table from view schema.
+        ** View-derived columns come first, then the built-in
+        ** version column is appended as the last column. */
+        char *zDdl = sqlite3_mprintf("CREATE TABLE \"%w\"(", zFeatName);
+        if (!zDdl)
+        {
+            sqlite3OomFault(db);
+            rc = SQLITE_NOMEM;
+            goto load_cleanup;
+        }
+
+        int i;
+        for (i = 0; zDdl && i < p->pView->nCol; i++)
+        {
+            Column *pCol = &p->pView->aCol[i];
+            const char *zType = sqlite3ColumnType(pCol, 0);
+            char *zNew;
+            if (zType)
+            {
+                zNew = sqlite3_mprintf("%s%s\"%w\" %s", zDdl,
+                                       i ? ", " : "", pCol->zCnName, zType);
+            }
+            else
+            {
+                zNew = sqlite3_mprintf("%s%s\"%w\"", zDdl,
+                                       i ? ", " : "", pCol->zCnName);
+            }
+            sqlite3_free(zDdl);
+            zDdl = zNew;
+        }
+
+        /* Append built-in version column */
+        if (zDdl)
+        {
+            char *zNew = sqlite3_mprintf("%s, " SQLITEFS_COL_VERSION " TEXT",
+                                         zDdl);
+            sqlite3_free(zDdl);
+            zDdl = zNew;
+        }
+
+        if (!zDdl)
+        {
+            sqlite3OomFault(db);
+            rc = SQLITE_NOMEM;
+            goto load_cleanup;
+        }
+
+        char *zFinal = sqlite3_mprintf("%s)", zDdl);
+        sqlite3_free(zDdl);
+        if (!zFinal)
+        {
+            sqlite3OomFault(db);
+            rc = SQLITE_NOMEM;
+            goto load_cleanup;
+        }
+
+        rc = sqlite3_exec(db, zFinal, 0, 0, 0);
+        sqlite3_free(zFinal);
+        if (rc != SQLITE_OK)
+        {
+            sqlite3ErrorMsg(pParse, "create feature table: %s", sqlite3_errmsg(db));
+            rc = SQLITE_ERROR;
+            goto load_cleanup;
+        }
+
+        /* Look up the newly created table */
+        p->pFeatTable = sqlite3FindTable(db, zFeatName, 0);
+        if (!p->pFeatTable)
+        {
+            sqlite3ErrorMsg(pParse, "feature table '%s' not found after creation", zFeatName);
+            rc = SQLITE_ERROR;
+            goto load_cleanup;
+        }
+    }
+
     *ppDef = p;
-    return SQLITE_OK;
+    p = 0; /* prevent cleanup from freeing the result */
+    rc = SQLITE_OK;
+
+load_cleanup:
+    sqlite3_free(zViewName);
+    sqlite3_free(zFeatName);
+    sqlitefs_free_feature_def(p);
+    return rc;
 }
 
 #ifndef SQLITE_OMIT_FEATURE
@@ -501,23 +520,176 @@ fail:
     return 0;
 }
 
+/* ----------------- Point-in-Time Query Rewrite ---------------------*/
+/*
+** sqlitefs_gran_col_expr()
+**
+** Build an Expr that applies the granularity truncation function
+** to the timestamp column reference:
+**   DAY  → DATE(<zTimestampCol>)
+**   HOUR → strftime('%Y-%m-%dT%H', <zTimestampCol>)
+*/
+static Expr *sqlitefs_gran_col_expr(Parse *pParse, FeatureDef *pDef)
+{
+    sqlite3 *db = pParse->db;
+    ExprList *pArgs = 0;
+    Token tFunc;
+    int isHour = (sqlite3_stricmp(pDef->zGranularity, "HOUR") == 0);
+
+    if (isHour)
+    {
+        Expr *pFmt = sqlite3Expr(db, TK_STRING, "%Y-%m-%dT%H");
+        pArgs = sqlite3ExprListAppend(pParse, pArgs, pFmt);
+        tFunc.z = "strftime";
+        tFunc.n = 8;
+    }
+    else
+    {
+        tFunc.z = "date";
+        tFunc.n = 4;
+    }
+
+    /* Timestamp column reference as unresolved identifier */
+    Expr *pCol = sqlite3Expr(db, TK_ID, pDef->zTimestampCol);
+    pArgs = sqlite3ExprListAppend(pParse, pArgs, pCol);
+
+    return sqlite3ExprFunction(pParse, pArgs, &tFunc, 0);
+}
+
+/*
+** sqlitefs_gran_now_expr()
+**
+** Build an Expr for a granularity-truncated boundary relative to 'now'.
+**   nOffset == 0 → gran('now')           e.g. DATE('now')
+**   nOffset >  0 → gran('now', '-N u')   e.g. DATE('now', '-6 days')
+**
+** The offset subtracts nOffset granularity units from 'now' before
+** truncation, so the result is a partition key in the past.
+*/
+static Expr *sqlitefs_gran_now_expr(
+    Parse *pParse,
+    FeatureDef *pDef,
+    int nOffset)
+{
+    sqlite3 *db = pParse->db;
+    ExprList *pArgs = 0;
+    Token tFunc;
+    int isHour = (sqlite3_stricmp(pDef->zGranularity, "HOUR") == 0);
+
+    if (isHour)
+    {
+        Expr *pFmt = sqlite3Expr(db, TK_STRING, "%Y-%m-%dT%H");
+        pArgs = sqlite3ExprListAppend(pParse, pArgs, pFmt);
+        tFunc.z = "strftime";
+        tFunc.n = 8;
+    }
+    else
+    {
+        tFunc.z = "date";
+        tFunc.n = 4;
+    }
+
+    /* 'now' literal — the time-value argument */
+    Expr *pNow = sqlite3Expr(db, TK_STRING, "now");
+    pArgs = sqlite3ExprListAppend(pParse, pArgs, pNow);
+
+    /* Optional modifier: '-<nOffset> days' or '-<nOffset> hours' */
+    if (nOffset > 0)
+    {
+        const char *zUnit = isHour ? "hours" : "days";
+        char *zMod = sqlite3_mprintf("-%d %s", nOffset, zUnit);
+        if (zMod)
+        {
+            Expr *pMod = sqlite3Expr(db, TK_STRING, zMod);
+            sqlite3_free(zMod);
+            pArgs = sqlite3ExprListAppend(pParse, pArgs, pMod);
+        }
+    }
+
+    return sqlite3ExprFunction(pParse, pArgs, &tFunc, 0);
+}
+
 /*
 ** sqlitefs_build_pit_query()
 **
-** Rewrite the dup'd view Select* in-place for point-in-time
-** materialization. Currently a no-op pass-through.
+** Rewrite the duplicated view Select* in-place for point-in-time
+** materialization.
 **
-** TODO: inject partition filter into pWhere.
+** Part 1 — pWhere: inject sliding-window lower bound (AGGREGATE only).
+**   ts_col >= datetime('now', '-N units')
+**
+** The comparison uses the raw timestamp column — no granularity
+** truncation. This gives a true sliding window anchored at the
+** refresh moment.
+**
+** Example: GRANULARITY DAY, DURATION 7, refresh at 2026-04-10 12:00
+**   clicked_at >= datetime('now', '-7 days')
+**   → clicked_at >= '2026-04-03 12:00:00'
+**   Window covers exactly 7×24h ending at the refresh moment.
+**
+** SNAPSHOT features (nWindowSize == -1): no filter.
+**
+** Part 2 — pEList: append datetime('now') AS version.
 */
 static int sqlitefs_build_pit_query(
     Parse *pParse,
     FeatureDef *pDef,
     Select *pSelect)
 {
-    (void)pParse;
-    (void)pDef;
-    (void)pSelect;
-    /* TODO: AST rewrite — for now, pass through unchanged */
+    sqlite3 *db = pParse->db;
+
+    /* ---- Part 1: pWhere — sliding-window lower bound (AGGREGATE only) ---- */
+    if (pDef->eFeatureType != SQLITEFS_TYPE_SNAPSHOT)
+    {
+        int isHour = (sqlite3_stricmp(pDef->zGranularity, "HOUR") == 0);
+        const char *zUnit = isHour ? "hours" : "days";
+
+        /* LHS: bare column reference — ts_col */
+        Expr *pCol = sqlite3Expr(db, TK_ID, pDef->zTimestampCol);
+
+        /* RHS: datetime('now', '-N units') */
+        ExprList *pArgs = 0;
+        Expr *pNow = sqlite3Expr(db, TK_STRING, "now");
+        pArgs = sqlite3ExprListAppend(pParse, pArgs, pNow);
+
+        char *zMod = sqlite3_mprintf("-%d %s", pDef->nWindowSize, zUnit);
+        if (zMod)
+        {
+            Expr *pMod = sqlite3Expr(db, TK_STRING, zMod);
+            sqlite3_free(zMod);
+            pArgs = sqlite3ExprListAppend(pParse, pArgs, pMod);
+        }
+
+        Token tFunc;
+        tFunc.z = "datetime";
+        tFunc.n = 8;
+        Expr *pBound = sqlite3ExprFunction(pParse, pArgs, &tFunc, 0);
+
+        /* ts_col >= datetime('now', '-N units') */
+        Expr *pFilter = sqlite3PExpr(pParse, TK_GE, pCol, pBound);
+
+        /* AND onto existing WHERE */
+        pSelect->pWhere = sqlite3ExprAnd(pParse, pSelect->pWhere, pFilter);
+    }
+
+    /* ---- Part 2: pEList — append datetime('now') AS version ---- */
+    {
+        ExprList *pArgs = 0;
+        Expr *pNow = sqlite3Expr(db, TK_STRING, "now");
+        pArgs = sqlite3ExprListAppend(pParse, pArgs, pNow);
+
+        Token tFunc;
+        tFunc.z = "datetime";
+        tFunc.n = 8;
+        Expr *pVersion = sqlite3ExprFunction(pParse, pArgs, &tFunc, 0);
+
+        Token tAlias;
+        tAlias.z = "version";
+        tAlias.n = 7;
+        pSelect->pEList = sqlite3ExprListAppend(pParse, pSelect->pEList, pVersion);
+        sqlite3ExprListSetName(pParse, pSelect->pEList, &tAlias, 0);
+    }
+
     return SQLITE_OK;
 }
 
@@ -639,45 +811,25 @@ void sqlite3RefreshFeature(Parse *pParse, Token *pName)
     if (zName == 0)
         return;
 
-    /* TODO Integrate init feat_table within load_feature_def. since we have pFeatTable and pViews, we might not need zFeatTable and zViewName */
-    /* ---- Step 1: load feature profile ---- */
-    rc = sqlitefs_load_feature_def(db, zName, &pDef);
-    if (rc == SQLITE_NOTFOUND)
+    /* ---- Step 1: load feature profile (also ensures view and feature table exist) ---- */
+    rc = sqlitefs_load_feature_def(pParse, zName, &pDef);
+    if (rc != SQLITE_OK)
     {
-        sqlite3ErrorMsg(pParse, "feature '%s' not found", zName);
-        goto refresh_cleanup;
-    }
-    else if (rc == SQLITE_NOMEM)
-    {
-        sqlite3OomFault(db);
-        goto refresh_cleanup;
-    }
-    else if (rc != SQLITE_OK)
-    {
-        sqlite3ErrorMsg(pParse, "%s", sqlite3_errmsg(db));
         goto refresh_cleanup;
     }
 
-    /* ---- Step 2: ensure _feat_<name> table exists ---- */
-    if (!sqlitefs_init_feat_table(pParse, pDef))
-        goto refresh_cleanup;
-
-    /* ---- Step 3: get view's Select*, dup it, run PIT rewrite ---- */
+    /* ---- Step 2: get view's Select*, dup it, run PIT rewrite ---- */
+    if (!pDef->pView || !IsView(pDef->pView))
     {
-        Table *pViewTab = sqlite3FindTable(db, pDef->zViewName, 0);
-        if (!pViewTab || !IsView(pViewTab))
-        {
-            sqlite3ErrorMsg(pParse, "view for feature '%s' not found", pDef->zName);
-            goto refresh_cleanup;
-        }
-        pSel = sqlite3SelectDup(db, pViewTab->u.view.pSelect, 0);
+        sqlite3ErrorMsg(pParse, "view for feature '%s' not found", pDef->zName);
+        goto refresh_cleanup;
     }
+    pSel = sqlite3SelectDup(db, pDef->pView->u.view.pSelect, 0);
     if (!pSel)
     {
         sqlite3OomFault(db);
         goto refresh_cleanup;
     }
-
     rc = sqlitefs_build_pit_query(pParse, pDef, pSel);
     if (rc != SQLITE_OK)
         goto refresh_cleanup;
@@ -685,8 +837,8 @@ void sqlite3RefreshFeature(Parse *pParse, Token *pName)
     /* ---- Step 4: build SrcList for _feat_<name>, call sqlite3Insert ---- */
     {
         Token tblToken;
-        tblToken.z = pDef->zFeatTable;
-        tblToken.n = (unsigned)sqlite3Strlen30(pDef->zFeatTable);
+        tblToken.z = pDef->pFeatTable->zName;
+        tblToken.n = (unsigned)sqlite3Strlen30(pDef->pFeatTable->zName);
         pTabList = sqlite3SrcListAppend(pParse, 0, &tblToken, 0);
         if (!pTabList)
         {
