@@ -474,7 +474,14 @@ static FeatureDef *sqlitefs_feature_def_from_tokens(
     }
 
     /* ── Entity table name ── */
-    /* TODO (Phase 4): resolve PK of entity table via PRAGMA table_info */
+    /* TODO (Phase 3): validate that the inner SELECT includes a column whose
+    ** name matches the entity table's PRIMARY KEY. At REFRESH time,
+    ** sqlitefs_build_pit_query() should LEFT JOIN from the entity table to
+    ** the inner query as a subquery, and COALESCE aggregate columns to 0,
+    ** so that entities with no matching rows get default values instead of
+    ** being omitted.
+    ** Use sqlite3FindTable() + pTab->iPKey / aCol[iPKey].zCnName to resolve
+    ** the PK column name, then scan pSelect->pEList for a matching alias. */
     p->zEntityTable = sqlite3NameFromToken(db, pEntityTable);
     if (!p->zEntityTable)
         goto fail;
