@@ -24,10 +24,11 @@ source $testdir/tester.tcl
 #   - Duplicate feature names rejected by PRIMARY KEY constraint.
 #   - _sqlite_fs_features columns: feature_name, entity_table,
 #     timestamp_column, col_gran, gran_expr, window_size,
-#     feature_type, refresh_mode, retention_count, created_at,
-#     last_refreshed.
+#     feature_type, refresh_mode, retention_count, created_at.
 #   - Removed columns: query_definition, source_tables,
-#     feat_col_names, feat_col_types.
+#     feat_col_names, feat_col_types, last_refreshed.
+#   - Removed table: _sqlite_fs_partitions (refresh history
+#     queryable via SELECT DISTINCT version FROM _feat_<name>).
 #   - Each successful CREATE FEATURE also creates:
 #     CREATE VIEW _sqlite_fs_view_<name> AS <query>
 #

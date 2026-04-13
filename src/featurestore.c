@@ -18,7 +18,6 @@
 ** hardcode the strings directly, so a rename only touches here.
 ** ============================================================ */
 #define SQLITEFS_META_TABLE "_sqlite_fs_features"
-#define SQLITEFS_PART_TABLE "_sqlite_fs_partitions"
 #define SQLITEFS_FEATURE_TABLE_PREFIX "_sqlite_fs_feat_"
 #define SQLITEFS_VIEW_PREFIX "_sqlite_fs_view_"
 
@@ -33,16 +32,10 @@
 #define SQLITEFS_COL_REFRESH "refresh_mode"
 #define SQLITEFS_COL_RETAIN "retention_count"
 #define SQLITEFS_COL_CREATED "created_at"
-#define SQLITEFS_COL_REFRESHED "last_refreshed"
 
 /* _feat_<name> built-in columns */
 #define SQLITEFS_COL_VERSION "version"
 
-/* _sqlite_fs_partitions columns */
-#define SQLITEFS_PCOL_FEATNAME "feature_name"
-#define SQLITEFS_PCOL_PARTKEY "partition_key"
-#define SQLITEFS_PCOL_ROWCOUNT "row_count"
-#define SQLITEFS_PCOL_REFRESHED "refreshed_at"
 
 /* eFeatureType values */
 #define SQLITEFS_TYPE_SNAPSHOT 1
@@ -68,21 +61,9 @@ static const char sqlitefs_meta_ddl[] =
     "  " SQLITEFS_COL_FEATTYPE " TEXT NOT NULL DEFAULT 'AGGREGATE',"
     "  " SQLITEFS_COL_REFRESH " TEXT NOT NULL DEFAULT 'INCREMENTAL',"
     "  " SQLITEFS_COL_RETAIN " INTEGER," /* NULL = unlimited */
-    "  " SQLITEFS_COL_CREATED " TEXT DEFAULT (datetime('now')),"
-    "  " SQLITEFS_COL_REFRESHED " TEXT"
+    "  " SQLITEFS_COL_CREATED " TEXT DEFAULT (datetime('now'))"
     ")";
 
-/* NEW: _sqlite_fs_partitions: one row per (feature, partition) after REFRESH */
-static const char sqlitefs_part_ddl[] =
-    "CREATE TABLE IF NOT EXISTS " SQLITEFS_PART_TABLE "("
-    "  " SQLITEFS_PCOL_FEATNAME " TEXT NOT NULL,"
-    "  " SQLITEFS_PCOL_PARTKEY " TEXT NOT NULL,"
-    "  " SQLITEFS_PCOL_ROWCOUNT " INTEGER NOT NULL DEFAULT 0,"
-    "  " SQLITEFS_PCOL_REFRESHED " TEXT NOT NULL DEFAULT (datetime('now')),"
-    "  PRIMARY KEY (" SQLITEFS_PCOL_FEATNAME ", " SQLITEFS_PCOL_PARTKEY "),"
-    "  FOREIGN KEY (" SQLITEFS_PCOL_FEATNAME ")"
-    "    REFERENCES " SQLITEFS_META_TABLE "(" SQLITEFS_COL_NAME ")"
-    ")";
 
 /* INSERT full feature profile.
 ** window_size and retention_count use %s (not %d) so caller can pass
@@ -142,7 +123,7 @@ struct FeatureDef
 
     /* lifecycle */
     int eRefreshMode;    /* SQLITEFS_REFRESH_INCR | SQLITEFS_REFRESH_FULL */
-    int nRetentionCount; /* max partitions; -1 = unlimited */
+    int nRetentionCount; /* max versions to keep; -1 = unlimited */
 };
 
 static void sqlitefs_free_feature_def(FeatureDef *p)
@@ -734,17 +715,11 @@ void sqlite3CreateFeature(
     if (!pDef)
         goto cleanup;
 
-    /* Step 1: ensure both registry tables exist. */
+    /* Step 1: ensure registry table exists. */
     rc = sqlite3_exec(db, sqlitefs_meta_ddl, 0, 0, 0);
     if (rc != SQLITE_OK)
     {
         sqlite3ErrorMsg(pParse, "create features table: %s", sqlite3_errmsg(db));
-        goto cleanup;
-    }
-    rc = sqlite3_exec(db, sqlitefs_part_ddl, 0, 0, 0);
-    if (rc != SQLITE_OK)
-    {
-        sqlite3ErrorMsg(pParse, "create partitions table: %s", sqlite3_errmsg(db));
         goto cleanup;
     }
 
@@ -799,11 +774,8 @@ cleanup:
 **   2. Ensure _feat_<name> exists (sqlitefs_init_feat_table).
 **   3. Find view → dup its Select* → PIT rewrite (sqlitefs_build_pit_query).
 **   4. Build SrcList for _feat_<name>, call sqlite3Insert().
-**   5. TODO: upsert _sqlite_fs_partitions via NestedParse.
-**   6. TODO: update last_refreshed via NestedParse.
-**   7. TODO: retention enforcement.
-**
-** Steps 4-6 emit into the same VDBE → one atomic transaction.
+**   5. TODO: retention enforcement (delete old versions from _feat_<name>
+**      when count exceeds RETAIN N).
 */
 void sqlite3RefreshFeature(Parse *pParse, Token *pName)
 {
@@ -859,11 +831,8 @@ void sqlite3RefreshFeature(Parse *pParse, Token *pName)
     pTabList = 0; /* consumed */
     pSel = 0;     /* consumed */
 
-    /* ---- Step 5: TODO — upsert _sqlite_fs_partitions via NestedParse ---- */
-
-    /* ---- Step 6: TODO — update last_refreshed via NestedParse ---- */
-
-    /* ---- Step 7: TODO — retention enforcement ---- */
+    /* ---- Step 5: TODO — retention enforcement (delete old versions
+    **       from _feat_<name> when count exceeds RETAIN N) ---- */
 
 refresh_cleanup:
     sqlite3SrcListDelete(db, pTabList);
