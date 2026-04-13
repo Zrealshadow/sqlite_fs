@@ -79,6 +79,14 @@ static const char sqlitefs_insert_feature[] =
 static const char sqlitefs_insert_feature_view[] =
     "CREATE VIEW IF NOT EXISTS \"" SQLITEFS_VIEW_PREFIX "%w\" AS %s";
 
+/* Retention enforcement: delete rows of the oldest version when
+** the number of distinct versions exceeds the retention limit.
+** %w = feat table name (x3), %d = retention count */
+static const char sqlitefs_retention_delete[] =
+    "DELETE FROM \"%w\" WHERE " SQLITEFS_COL_VERSION " = "
+    "(SELECT MIN(" SQLITEFS_COL_VERSION ") FROM \"%w\") "
+    "AND (SELECT COUNT(DISTINCT " SQLITEFS_COL_VERSION ") FROM \"%w\") > %d";
+
 /* SELECT full profile — column indices used in sqlitefs_load_feature_def */
 static const char sqlitefs_search_feature[] =
     "SELECT " SQLITEFS_COL_ENTITYTAB "," /* 0 */
@@ -774,8 +782,8 @@ cleanup:
 **   2. Ensure _feat_<name> exists (sqlitefs_init_feat_table).
 **   3. Find view → dup its Select* → PIT rewrite (sqlitefs_build_pit_query).
 **   4. Build SrcList for _feat_<name>, call sqlite3Insert().
-**   5. TODO: retention enforcement (delete old versions from _feat_<name>
-**      when count exceeds RETAIN N).
+**   5. Retention enforcement: if RETAIN N is set and distinct version
+**      count exceeds N, delete the oldest version from _feat_<name>.
 */
 void sqlite3RefreshFeature(Parse *pParse, Token *pName)
 {
@@ -831,8 +839,15 @@ void sqlite3RefreshFeature(Parse *pParse, Token *pName)
     pTabList = 0; /* consumed */
     pSel = 0;     /* consumed */
 
-    /* ---- Step 5: TODO — retention enforcement (delete old versions
-    **       from _feat_<name> when count exceeds RETAIN N) ---- */
+    /* ---- Step 5: retention enforcement ---- */
+    if (pDef->nRetentionCount > 0) {
+        sqlite3NestedParse(pParse, sqlitefs_retention_delete,
+            pDef->pFeatTable->zName,
+            pDef->pFeatTable->zName,
+            pDef->pFeatTable->zName,
+            pDef->nRetentionCount
+        );
+    }
 
 refresh_cleanup:
     sqlite3SrcListDelete(db, pTabList);

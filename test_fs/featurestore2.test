@@ -363,4 +363,156 @@ do_catchsql_test featurestore2-8.2 {
     REFRESH FEATURE bad_ref;
 } {1 {no such table: main.ghost_table}}
 
+# ============================================================
+# 9.x  Retention enforcement — RETAIN N limits stored versions
+#      After each REFRESH, if distinct version count > N,
+#      the oldest version's rows are deleted.
+# ============================================================
+
+# 9.1  Create feature with RETAIN 2
+do_execsql_test featurestore2-9.1 {
+    CREATE FEATURE retained_clicks
+        ENTITY users
+        TIMESTAMP clicked_at
+        GRANULARITY DAY
+        RETAIN 2
+    AS (
+        SELECT user_id, COUNT(*) AS cnt
+        FROM clicks
+        GROUP BY user_id
+    );
+} {}
+
+# 9.2  First REFRESH — 1 version, under limit, nothing pruned
+do_execsql_test featurestore2-9.2 {
+    REFRESH FEATURE retained_clicks;
+} {}
+
+do_execsql_test featurestore2-9.2a {
+    SELECT COUNT(DISTINCT version) FROM _sqlite_fs_feat_retained_clicks;
+} {1}
+
+# 9.3  Second REFRESH — 2 versions, at limit, nothing pruned
+after 1100
+do_execsql_test featurestore2-9.3 {
+    REFRESH FEATURE retained_clicks;
+} {}
+
+do_execsql_test featurestore2-9.3a {
+    SELECT COUNT(DISTINCT version) FROM _sqlite_fs_feat_retained_clicks;
+} {2}
+
+# Save version timestamps for later verification
+do_execsql_test featurestore2-9.3b {
+    SELECT COUNT(*) FROM _sqlite_fs_feat_retained_clicks;
+} {6}
+
+# 9.4  Third REFRESH — exceeds limit, oldest version pruned
+after 1100
+do_execsql_test featurestore2-9.4 {
+    REFRESH FEATURE retained_clicks;
+} {}
+
+# Still only 2 distinct versions — oldest was deleted
+do_execsql_test featurestore2-9.4a {
+    SELECT COUNT(DISTINCT version) FROM _sqlite_fs_feat_retained_clicks;
+} {2}
+
+# Row count: 2 versions x 3 rows each = 6 (not 9)
+do_execsql_test featurestore2-9.4b {
+    SELECT COUNT(*) FROM _sqlite_fs_feat_retained_clicks;
+} {6}
+
+# 9.5  Fourth REFRESH — still exactly 2 versions retained
+after 1100
+do_execsql_test featurestore2-9.5 {
+    REFRESH FEATURE retained_clicks;
+} {}
+
+do_execsql_test featurestore2-9.5a {
+    SELECT COUNT(DISTINCT version) FROM _sqlite_fs_feat_retained_clicks;
+} {2}
+
+# 9.6  The surviving versions are the two most recent (not the oldest)
+#      MIN(version) should be from the 3rd or 4th refresh, not the 1st
+do_execsql_test featurestore2-9.6 {
+    SELECT COUNT(*) FROM _sqlite_fs_feat_retained_clicks
+    WHERE version = (SELECT MIN(version) FROM _sqlite_fs_feat_retained_clicks);
+} {3}
+
+# ============================================================
+# 9.1x  Retention with RETAIN 1 — only latest version survives
+# ============================================================
+
+do_execsql_test featurestore2-9.10 {
+    CREATE FEATURE retain_one
+        ENTITY users
+        TIMESTAMP clicked_at
+        GRANULARITY DAY
+        RETAIN 1
+    AS (
+        SELECT user_id, COUNT(*) AS cnt
+        FROM clicks
+        GROUP BY user_id
+    );
+} {}
+
+do_execsql_test featurestore2-9.11 {
+    REFRESH FEATURE retain_one;
+} {}
+
+do_execsql_test featurestore2-9.11a {
+    SELECT COUNT(DISTINCT version) FROM _sqlite_fs_feat_retain_one;
+} {1}
+
+after 1100
+do_execsql_test featurestore2-9.12 {
+    REFRESH FEATURE retain_one;
+} {}
+
+# Only 1 version survives
+do_execsql_test featurestore2-9.12a {
+    SELECT COUNT(DISTINCT version) FROM _sqlite_fs_feat_retain_one;
+} {1}
+
+# Row count equals single-refresh output (3 users with clicks)
+do_execsql_test featurestore2-9.12b {
+    SELECT COUNT(*) FROM _sqlite_fs_feat_retain_one;
+} {3}
+
+# ============================================================
+# 9.2x  No retention (default) — versions accumulate without limit
+# ============================================================
+
+do_execsql_test featurestore2-9.20 {
+    CREATE FEATURE no_retain
+        ENTITY users
+        TIMESTAMP clicked_at
+        GRANULARITY DAY
+    AS (
+        SELECT user_id, COUNT(*) AS cnt
+        FROM clicks
+        GROUP BY user_id
+    );
+} {}
+
+do_execsql_test featurestore2-9.21 {
+    REFRESH FEATURE no_retain;
+} {}
+
+after 1100
+do_execsql_test featurestore2-9.22 {
+    REFRESH FEATURE no_retain;
+} {}
+
+after 1100
+do_execsql_test featurestore2-9.23 {
+    REFRESH FEATURE no_retain;
+} {}
+
+# All 3 versions preserved — no pruning
+do_execsql_test featurestore2-9.23a {
+    SELECT COUNT(DISTINCT version) FROM _sqlite_fs_feat_no_retain;
+} {3}
+
 finish_test
