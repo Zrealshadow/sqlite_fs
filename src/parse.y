@@ -261,7 +261,7 @@ columnname(A) ::= nm(A) typetoken(Y). {sqlite3AddColumn(pParse,A,Y);}
 // Various assert() statements throughout the code enforce these restrictions.
 //
 %token ABORT ACTION AFTER ANALYZE ASC ATTACH BEFORE BEGIN BY CASCADE CAST.
-%token FEATURE REFRESH DESCRIBE.
+%token FEATURE REFRESH DESCRIBE ENTITY TIMESTAMP GRANULARITY RETAIN DURATION.
 %token CONFLICT DATABASE DEFERRED DESC DETACH EACH END EXCLUSIVE EXPLAIN FAIL.
 %token OR AND NOT IS ISNOT MATCH LIKE_KW BETWEEN IN ISNULL NOTNULL NE EQ.
 %token GT LE LT GE ESCAPE.
@@ -518,9 +518,48 @@ cmd ::= DROP VIEW ifexists(E) fullname(X). {
 
 ///////////////////// The CREATE FEATURE statement /////////////////////////////
 %ifndef SQLITE_OMIT_FEATURE
-cmd ::= createkw FEATURE nm(N) AS LP(L) select(S) RP(R)
-  PARTITION BY nm(P) BY nm(G). {
-  sqlite3CreateFeature(pParse, &N, S, &L, &R, &P, &G);
+
+// feat_window_opt: optional DURATION <n> clause.
+// Returns the window size as int; -1 means absent (SNAPSHOT).
+// Uses DURATION instead of WINDOW to avoid conflict with SQLite's built-in
+// WINDOW keyword, which is context-sensitive in tokenize.c and can only
+// appear as TK_WINDOW when followed by <identifier> AS.
+%type feat_window_opt {int}
+feat_window_opt(A) ::= . { A = -1; }
+feat_window_opt(A) ::= DURATION INTEGER(W). {
+  if( sqlite3GetInt32(W.z, &A)==0 ) A = 1; /* default to 1 if parse fails */
+}
+
+// feat_refresh_opt: optional REFRESH FULL|INCREMENTAL clause.
+// Returns the mode string as a Token; empty token means use default.
+%type feat_refresh_opt {Token}
+feat_refresh_opt(A) ::= . { A.z = 0; A.n = 0; }
+feat_refresh_opt(A) ::= REFRESH nm(R). { A = R; }
+
+// feat_retain_opt: optional RETAIN <n> clause.
+// Returns retention count as int; -1 means absent (unlimited).
+%type feat_retain_opt {int}
+feat_retain_opt(A) ::= . { A = -1; }
+feat_retain_opt(A) ::= RETAIN INTEGER(N). {
+  if( sqlite3GetInt32(N.z, &A)==0 ) A = -1;
+}
+
+// Main CREATE FEATURE rule.
+// Required clauses (fixed order): ENTITY, TIMESTAMP, GRANULARITY.
+// Optional clauses (fixed order): WINDOW, REFRESH, RETAIN.
+// The AS ( <select> ) must come last.
+//
+// ENTITY nm — name of the entity table; its PK is resolved at CREATE time.
+// LP/RP still captured for query text extraction.
+cmd ::= createkw FEATURE nm(N)
+        ENTITY nm(E)
+        TIMESTAMP nm(T)
+        GRANULARITY nm(G)
+        feat_window_opt(W)
+        feat_refresh_opt(R)
+        feat_retain_opt(RT)
+        AS LP(L) select(S) RP(RR). {
+  sqlite3CreateFeature(pParse, &N, &E, &T, &G, W, &R, RT, S, &L, &RR);
 }
 %endif SQLITE_OMIT_FEATURE
 
